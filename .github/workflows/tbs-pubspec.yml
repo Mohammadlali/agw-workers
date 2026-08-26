@@ -1,0 +1,45 @@
+# What a hosted runner on a PUBLIC repository actually gives you.
+#
+# The private repo was measured at 2 cores / 7 GB RAM / 43 GB free
+# (claud-cloud-project, Reports/cloud_host/runner_space.txt, run 32974052318).
+# The docs claim a public repo gets a larger machine. A spec sheet is not a
+# measurement -- the same docs said 14 GB of disk where 43 GB was measured.
+#
+# Prints only. Nothing is committed here; the numbers are read off the log and
+# written into the private repo's record by hand, with this run's id.
+name: TBS public runner spec
+
+on:
+  workflow_dispatch:
+
+jobs:
+  spec:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Measure the machine
+        run: |
+          set +e
+          echo "== identity =="
+          echo "repo         : $GITHUB_REPOSITORY"
+          echo "visibility   : ${{ github.event.repository.visibility }}"
+          echo "runner image : $ImageOS  $ImageVersion"
+          echo "arch         : $(uname -m)"
+          echo ""
+          echo "== cpu =="
+          echo "nproc        : $(nproc)"
+          grep -m1 'model name' /proc/cpuinfo
+          echo ""
+          echo "== memory =="
+          free -h
+          echo ""
+          echo "== disk, before cleanup =="
+          df -h / /mnt
+          echo ""
+          echo "== disk, after the standard cleanup =="
+          sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc \
+                      /usr/local/share/boost /usr/local/.ghcup \
+                      /usr/share/swift /opt/hostedtoolcache 2>/dev/null
+          df -h / /mnt
+          echo ""
+          echo "free_root_gb : $(df -BG --output=avail / | tail -1 | tr -dc '0-9')"
+          echo "done"
