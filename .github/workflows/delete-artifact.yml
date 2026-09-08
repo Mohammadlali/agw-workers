@@ -1,0 +1,29 @@
+name: Delete Artifact
+
+# Owner-authorized, one-shot cleanup. Deletes a specific run artifact by
+# ID, used to scrub exposure after the credential-in-prompt incident
+# (Team/CHANGELOG.md / MAP.md, Claud-Cloud-Project). Delete this file
+# after use -- it is not part of the pipeline.
+
+on:
+  workflow_dispatch:
+    inputs:
+      artifact_id:
+        description: 'Numeric artifact ID to delete'
+        required: true
+        type: string
+
+permissions:
+  actions: write
+
+jobs:
+  delete:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Delete artifact
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh api -X DELETE "repos/${{ github.repository }}/actions/artifacts/${{ inputs.artifact_id }}"
+          echo "Deleted artifact ${{ inputs.artifact_id }}"
