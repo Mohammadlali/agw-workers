@@ -114,6 +114,7 @@ jobs:
             Mohammadlali/Claud-Cloud-Project) TOKEN="$ACC0_PAT" ;;
             mohammadlali0707-stack/Control-Room)        TOKEN="$ACC6_PAT" ;;
             momonakikugava-pixel/AirboxVIP_Coffeenet) TOKEN="$ACC1_PAT" ;;
+            Mohammadlali/agw-workers) TOKEN="$ACC0_PAT" ;;
             *)
               echo "Unknown target_repo '$TARGET_REPO' -- refusing to attach a live credential to it." >&2
               exit 0
@@ -179,6 +180,7 @@ jobs:
             Mohammadlali/Claud-Cloud-Project) TOKEN="$ACC0_PAT" ;;
             mohammadlali0707-stack/Control-Room)        TOKEN="$ACC6_PAT" ;;
             momonakikugava-pixel/AirboxVIP_Coffeenet) TOKEN="$ACC1_PAT" ;;
+            Mohammadlali/agw-workers) TOKEN="$ACC0_PAT" ;;
             *) echo "Unknown target_repo -- not pushing." >&2; exit 0 ;;
           esac
           cd /tmp/agent-repo
