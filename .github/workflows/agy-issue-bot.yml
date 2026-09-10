@@ -1,0 +1,75 @@
+name: AGW Worker AGY Issue Bot (same-repo, no relay)
+
+# Same-repo replacement for Claud-Cloud-Project's agy-issue-bot.yml relay.
+# That relay always ran its own orchestration+poll job on 1997's Actions
+# for every dispatched issue, regardless of which account actually did the
+# work -- confirmed 2026-09-09 by reading its dispatch table directly. This
+# listener removes that: an @agy issue opened HERE dispatches
+# agw-worker.yml IN THIS SAME REPO, using this repo's own default
+# GITHUB_TOKEN -- no cross-account call, no ~20-minute poll, no relay.
+#
+# target_repo/target_branch below are set to THIS account's own wired key
+# repo (Team/ACCOUNTS.md), using the same PAT agw-worker.yml already uses
+# for it -- never a different account's credential.
+
+on:
+  issues:
+    types: [opened]
+  issue_comment:
+    types: [created]
+
+permissions:
+  issues: write
+  actions: write
+  contents: read
+
+jobs:
+  agy-same-repo:
+    runs-on: ubuntu-latest
+    if: >
+      (github.event_name == 'issues' && startsWith(github.event.issue.body, '@agy') && github.event.issue.author_association == 'OWNER') ||
+      (github.event_name == 'issue_comment' && startsWith(github.event.comment.body, '@agy') && github.event.comment.user.type != 'Bot' && github.event.comment.author_association == 'OWNER')
+    steps:
+      - name: Ack on the issue
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh issue comment "${{ github.event.issue.number }}" \
+            --repo "${{ github.repository }}" \
+            --body "AGY is on it (same-repo listener, no relay)."
+
+      - name: Build prompt
+        id: prompt
+        env:
+          ISSUE_TITLE: ${{ github.event.issue.title }}
+          ISSUE_BODY: ${{ github.event.issue.body }}
+          ISSUE_NUM: ${{ github.event.issue.number }}
+          COMMENT_BODY: ${{ github.event.comment.body }}
+        run: |
+          sanitize() { sed "s/\`/'/g; s/\"/'/g; s/\$(/DOLLAR(/g; s/\${/DOLLAR{/g"; }
+          SAFE_TITLE=$(printf '%s' "$ISSUE_TITLE" | sanitize)
+          SAFE_BODY=$(printf '%s' "$ISSUE_BODY" | sanitize)
+          SAFE_COMMENT=$(printf '%s' "$COMMENT_BODY" | sanitize)
+          {
+            printf '%s\n' 'You are AGY, an AI worker running inside this agw-workers repo itself.'
+            printf 'TASK - Issue #%s: %s\n' "$ISSUE_NUM" "$SAFE_TITLE"
+            printf '%s\n' "$SAFE_BODY"
+            if [ -n "$SAFE_COMMENT" ]; then
+              printf '%s\n' 'LATEST COMMENT:'
+              printf '%s\n' "$SAFE_COMMENT"
+            fi
+          } > /tmp/prompt.txt
+          echo "prompt_file=/tmp/prompt.txt" >> "$GITHUB_OUTPUT"
+
+      - name: Dispatch agw-worker.yml in this same repo
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          PROMPT=$(cat /tmp/prompt.txt)
+          gh workflow run agw-worker.yml \
+            --repo "${{ github.repository }}" \
+            --field "prompt=$PROMPT" \
+            --field "target_repo=Mohammadlali/Claud-Cloud-Project" \
+            --field "target_branch=claude/gateway-auth-fix-nr7k0b" \
+            --field "acc_index=0" \
+            --field "callback_id=same-repo-${{ github.event.issue.number }}-${{ github.run_id }}"
