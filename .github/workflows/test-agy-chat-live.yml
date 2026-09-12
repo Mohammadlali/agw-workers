@@ -88,22 +88,29 @@ jobs:
             fi
           fi
 
+          # Non-fatal: a Vercel project's configured Production Domain(s)
+          # auto-point to the latest successful production deployment on
+          # their own, confirmed live (curl to https://status2.airboxvip.top/
+          # returned 200 with fresh content within seconds of a deploy that
+          # had this exact alias-set command still failing). So a handful
+          # of quick attempts here is only to skip the propagation delay
+          # when possible -- if it never succeeds, warn and move on rather
+          # than failing the whole job and skipping the actual chat test.
           SUBDOMAIN="status2.airboxvip.top"
-          echo "Assigning domain alias $SUBDOMAIN to $DEPLOY_URL..."
+          echo "Assigning domain alias $SUBDOMAIN to $DEPLOY_URL (best-effort)..."
           ALIAS_OK=false
-          for attempt in $(seq 1 20); do
+          for attempt in 1 2 3; do
             if npx --yes vercel alias set "$DEPLOY_URL" "$SUBDOMAIN" --token="$VERCEL_TOKEN" --scope="$VERCEL_ORG_ID"; then
               ALIAS_OK=true
               break
             fi
-            echo "Alias attempt $attempt failed (deployment likely not ready yet, or domain not added to this Vercel project yet); retrying in 15s..."
-            sleep 15
+            echo "Alias attempt $attempt failed; retrying in 10s..."
+            sleep 10
           done
           if [ "$ALIAS_OK" != "true" ]; then
-            echo "::error::Could not assign domain alias after 20 attempts -- check that $SUBDOMAIN is added as a domain on this Vercel project."
-            exit 1
+            echo "::warning::Could not assign domain alias explicitly -- continuing anyway, since $SUBDOMAIN's own Production Domain setting already points at the latest deploy."
           fi
-          echo "Deployed and aliased to https://$SUBDOMAIN"
+          echo "Deploy step done for https://$SUBDOMAIN"
 
       - name: POST /api/agy_create
         id: create
