@@ -13,22 +13,19 @@ name: Refresh Status Dashboard Data (remote, runs here instead of on status-dash
 # day, which blew straight through Vercel's own free-tier cap of 100
 # deployments/day (`deploy-status-feed.yml`'s run history shows the exact
 # failure: "Error: Resource is limited ... api-deployments-free-per-day").
-# status.json no longer lives in git at all: collect_status_feed.py's own
-# archive_to_r2_if_configured() already writes it straight to Cloudflare R2
-# (bucket claud-cloud-status, key "status.json"), and status-dashboard's
-# new api/status.js Vercel FUNCTION reads it back live -- a function
-# invocation is not a deployment and has no meaningful daily cap at this
-# volume. So this workflow now only regenerates the feed and lets that R2
-# upload happen; it never touches git or Vercel. Actual site deploys (code
-# changes) go through status-dashboard's own deploy-status-feed.yml,
+# status.json no longer lives in git or Vercel deploys at all; this
+# workflow only regenerates the feed and publishes it. Actual site deploys
+# (code changes) go through status-dashboard's own deploy-status-feed.yml,
 # triggered by pushes to that repo, not by this 5-minute cron.
 #
-# Secrets this repo needs that status-dashboard already has and this repo
-# does NOT yet have (GitHub never exposes a secret's value for reading, so
-# these must be re-entered by hand, not copied programmatically):
-#   R2_ACCESS_KEY_ID, R2_SECRET_ACCESS_KEY, R2_S3_ENDPOINT,
-#   VAPID_PRIVATE_KEY, VAPID_PUBLIC_KEY
-# ACC0_PAT/ACC1_PAT/ACC6_PAT are already present here (used by agw-worker.yml).
+# Switched from Cloudflare R2 to a GitHub Gist the same day: R2 is
+# permanently unavailable on the owner's Cloudflare account (not fully
+# provisioned, so Cloudflare blocks all TLS to the R2 endpoint
+# account-wide -- confirmed identically across 4 separate client/runtime
+# combinations while debugging status-dashboard's api/status.js). The
+# script now PATCHes the fleet's status Gist using ACC0_PAT (already
+# present here, already has the 'gist' scope) instead -- no new secret
+# needed on this repo.
 
 on:
   schedule:
@@ -46,7 +43,7 @@ permissions:
 
 jobs:
   refresh-feed:
-    name: Regenerate status.json and push it to R2 (from agw-workers)
+    name: Regenerate status.json and publish it to the status gist (from agw-workers)
     runs-on: ubuntu-latest
     timeout-minutes: 5
     env:
@@ -67,15 +64,12 @@ jobs:
       - name: Install Python Dependencies
         run: |
           python3 -m pip install --upgrade pip
-          pip install boto3 pywebpush 2>/dev/null || true
+          pip install pywebpush 2>/dev/null || true
 
-      - name: Regenerate status feed and upload to R2
+      - name: Regenerate status feed and publish to the status gist
         env:
           ACC1_PAT: ${{ secrets.ACC1_PAT }}
           ACC6_PAT: ${{ secrets.ACC6_PAT }}
-          R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
-          R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
-          R2_S3_ENDPOINT: ${{ secrets.R2_S3_ENDPOINT }}
           VAPID_PRIVATE_KEY: ${{ secrets.VAPID_PRIVATE_KEY }}
           VAPID_PUBLIC_KEY: ${{ secrets.VAPID_PUBLIC_KEY }}
         run: |
