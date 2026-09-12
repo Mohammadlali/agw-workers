@@ -92,7 +92,7 @@ jobs:
           echo "Assigning domain alias $SUBDOMAIN to $DEPLOY_URL..."
           ALIAS_OK=false
           for attempt in $(seq 1 20); do
-            if npx --yes vercel alias set "$DEPLOY_URL" "$SUBDOMAIN" --token="$VERCEL_TOKEN"; then
+            if npx --yes vercel alias set "$DEPLOY_URL" "$SUBDOMAIN" --token="$VERCEL_TOKEN" --scope="$VERCEL_ORG_ID"; then
               ALIAS_OK=true
               break
             fi
