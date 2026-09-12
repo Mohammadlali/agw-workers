@@ -1,0 +1,44 @@
+name: Test the live /api/status endpoint (via Vercel Protection Bypass)
+
+# Same jump-server pattern as test-agy-chat-live.yml: status-dashboard's
+# /api/* routes sit behind Vercel Deployment Protection on purpose, so
+# this repo's own Actions runner (holding VERCEL_PROTECTION_BYPASS, a
+# write-only secret no local session can read back) is the only way to
+# verify the live endpoint from outside a real browser session.
+
+on:
+  workflow_dispatch: {}
+
+jobs:
+  test-status-api:
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    env:
+      BYPASS: ${{ secrets.VERCEL_PROTECTION_BYPASS }}
+      SITE: https://status.airboxvip.top
+    steps:
+      - name: Guard
+        run: |
+          set -e
+          if [ -z "$BYPASS" ]; then echo "::error::secrets.VERCEL_PROTECTION_BYPASS is not set"; exit 1; fi
+
+      - name: GET /api/status
+        run: |
+          set -e
+          CODE=$(curl -sL --max-redirs 5 -b /tmp/cj.txt -c /tmp/cj.txt \
+            -o /tmp/status_resp.json -w "%{http_code}" \
+            "$SITE/api/status?t=$(date +%s)" \
+            -H "x-vercel-protection-bypass: $BYPASS" \
+            -H "x-vercel-set-bypass-cookie: true")
+          echo "HTTP $CODE"
+          if [ "$CODE" != "200" ]; then
+            echo "::error::/api/status did not return 200"
+            cat /tmp/status_resp.json
+            exit 1
+          fi
+          echo "--- overview ---"
+          jq '.overview' /tmp/status_resp.json
+          echo "--- generated_at ---"
+          jq -r '.metadata.generated_at' /tmp/status_resp.json
+          echo "--- airboxvip project entry ---"
+          jq '.projects[] | select(.key == "airboxvip")' /tmp/status_resp.json
