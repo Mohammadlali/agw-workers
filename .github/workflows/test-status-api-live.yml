@@ -49,3 +49,44 @@ jobs:
           jq -r '.metadata.generated_at' /tmp/status_resp.json
           echo "--- airboxvip project entry ---"
           jq '.projects[] | select(.key == "airboxvip")' /tmp/status_resp.json
+
+      - name: POST /api/subscribe (test payload, gist currently holds only a placeholder)
+        run: |
+          set -e
+          PAYLOAD='{"endpoint":"https://example-push-service.test/live-verify-probe","keys":{"p256dh":"test-p256dh","auth":"test-auth"}}'
+          CODE=$(curl -sL --max-redirs 5 -b /tmp/cj.txt -c /tmp/cj.txt \
+            -o /tmp/subscribe_resp.json -w "%{http_code}" \
+            -X POST "$SITE/api/subscribe" \
+            -H "Content-Type: application/json" \
+            -H "x-vercel-protection-bypass: $BYPASS" \
+            -H "x-vercel-set-bypass-cookie: true" \
+            -d "$PAYLOAD")
+          echo "HTTP $CODE"
+          cat /tmp/subscribe_resp.json
+          if [ "$CODE" != "200" ]; then
+            echo "::error::/api/subscribe did not return 200"
+            exit 1
+          fi
+          STATUS=$(jq -r '.status' /tmp/subscribe_resp.json)
+          echo "response status field: $STATUS"
+          if [ "$STATUS" != "success" ]; then
+            echo "::warning::subscribe endpoint returned 200 but status=$STATUS (likely ACC0_PAT missing on this Vercel project) -- not a persisted write."
+          fi
+
+      - name: Verify the gist actually got the test subscription, then restore the placeholder
+        env:
+          ACC0_PAT: ${{ secrets.ACC0_PAT }}
+        run: |
+          set -e
+          sleep 3
+          GIST_BODY=$(curl -sS "https://gist.githubusercontent.com/Mohammadlali/8a1dbd864c788597da9c7750c70bd419/raw/subscription.json?t=$(date +%s)")
+          echo "gist now holds: $GIST_BODY"
+          echo "$GIST_BODY" | jq -e '.endpoint == "https://example-push-service.test/live-verify-probe"' >/dev/null
+          echo "Confirmed: /api/subscribe's write reached the gist. Restoring placeholder..."
+          curl -sS -X PATCH "https://api.github.com/gists/8a1dbd864c788597da9c7750c70bd419" \
+            -H "Authorization: Bearer $ACC0_PAT" \
+            -H "Accept: application/vnd.github+json" \
+            -H "X-GitHub-Api-Version: 2022-11-28" \
+            -d '{"files":{"subscription.json":{"content":"{\"placeholder\": true}"}}}' \
+            -o /tmp/restore_resp.json -w "restore HTTP %{http_code}\n"
+          cat /tmp/restore_resp.json
