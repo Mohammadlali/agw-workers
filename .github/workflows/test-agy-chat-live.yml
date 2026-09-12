@@ -1,0 +1,101 @@
+name: Test the live @agy chat widget (via Vercel Protection Bypass)
+
+# status-dashboard's /api/* routes sit behind Vercel Deployment Protection
+# (SSO) on purpose -- the owner does not want the site public. Nobody
+# outside this repo's own Actions runners can reach VERCEL_PROTECTION_BYPASS
+# (a GitHub Actions secret is write-only, never readable back out), so this
+# workflow is the "jump server" for it: it POSTs/GETs the real live
+# endpoints server-side with the bypass header and prints back only the
+# non-secret parts of the response (issue numbers, urls, reply bodies),
+# same pattern as every other cross-account credential in this fleet.
+
+on:
+  workflow_dispatch:
+    inputs:
+      message:
+        description: Chat message to send (end with "@issue" to test task mode)
+        required: true
+        default: "این پیام یک تست خودکار از agw-workers است -- لطفا فقط تایید کن که این پیام را دریافت کردی."
+      project:
+        description: "Optional project hint (control_room / tbs / airboxvip / status_dashboard)"
+        required: false
+        default: ""
+      issue_number:
+        description: "Optional: continue an existing quick-chat thread instead of opening a new one"
+        required: false
+        default: ""
+
+jobs:
+  test-live-chat:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      BYPASS: ${{ secrets.VERCEL_PROTECTION_BYPASS }}
+      SITE: https://status.airboxvip.top
+    steps:
+      - name: Guard
+        run: |
+          set -e
+          if [ -z "$BYPASS" ]; then echo "::error::secrets.VERCEL_PROTECTION_BYPASS is not set"; exit 1; fi
+
+      - name: POST /api/agy_create
+        id: create
+        env:
+          MESSAGE: ${{ inputs.message }}
+          PROJECT: ${{ inputs.project }}
+          ISSUE_NUMBER: ${{ inputs.issue_number }}
+        run: |
+          set -e
+          PAYLOAD=$(python3 -c "import json,os; print(json.dumps({'message': os.environ['MESSAGE'], 'project': os.environ.get('PROJECT',''), 'issue_number': (int(os.environ['ISSUE_NUMBER']) if os.environ.get('ISSUE_NUMBER') else None)}))")
+          CODE=$(curl -s -o /tmp/create_resp.json -w "%{http_code}" \
+            -X POST "$SITE/api/agy_create" \
+            -H "Content-Type: application/json" \
+            -H "x-vercel-protection-bypass: $BYPASS" \
+            -H "x-vercel-set-bypass-cookie: true" \
+            -d "$PAYLOAD")
+          echo "HTTP $CODE"
+          cat /tmp/create_resp.json
+          echo "http_code=$CODE" >> "$GITHUB_OUTPUT"
+          if [ "$CODE" != "200" ]; then
+            echo "::error::agy_create did not return 200 -- see printed body above (no secret in it)."
+            exit 1
+          fi
+          ISSUE_NUM=$(python3 -c "import json; print(json.load(open('/tmp/create_resp.json')).get('issue_number',''))")
+          MODE=$(python3 -c "import json; print(json.load(open('/tmp/create_resp.json')).get('mode',''))")
+          echo "issue_number=$ISSUE_NUM" >> "$GITHUB_OUTPUT"
+          echo "mode=$MODE" >> "$GITHUB_OUTPUT"
+          {
+            echo "### agy_create result"
+            echo '```json'
+            cat /tmp/create_resp.json
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Poll /api/agy_status for a reply
+        env:
+          ISSUE_NUM: ${{ steps.create.outputs.issue_number }}
+        run: |
+          set -e
+          for i in $(seq 1 20); do
+            CODE=$(curl -s -o /tmp/status_resp.json -w "%{http_code}" \
+              "$SITE/api/agy_status?issue_number=$ISSUE_NUM" \
+              -H "x-vercel-protection-bypass: $BYPASS" \
+              -H "x-vercel-set-bypass-cookie: true")
+            echo "[$i/20] HTTP $CODE"
+            if [ "$CODE" = "200" ]; then
+              REPLY_COUNT=$(python3 -c "import json; print(len(json.load(open('/tmp/status_resp.json')).get('replies',[])))")
+              echo "replies so far: $REPLY_COUNT"
+              if [ "$REPLY_COUNT" -ge 2 ]; then
+                break
+              fi
+            fi
+            sleep 15
+          done
+          echo "--- final agy_status body ---"
+          python3 -m json.tool < /tmp/status_resp.json || cat /tmp/status_resp.json
+          {
+            echo "### agy_status final result (issue #$ISSUE_NUM)"
+            echo '```json'
+            cat /tmp/status_resp.json
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
