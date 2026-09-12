@@ -47,7 +47,8 @@ jobs:
         run: |
           set -e
           PAYLOAD=$(python3 -c "import json,os; print(json.dumps({'message': os.environ['MESSAGE'], 'project': os.environ.get('PROJECT',''), 'issue_number': (int(os.environ['ISSUE_NUMBER']) if os.environ.get('ISSUE_NUMBER') else None)}))")
-          CODE=$(curl -s -o /tmp/create_resp.json -w "%{http_code}" \
+          CODE=$(curl -sL --max-redirs 5 -b /tmp/agy_cookies.txt -c /tmp/agy_cookies.txt \
+            -o /tmp/create_resp.json -w "%{http_code}" \
             -X POST "$SITE/api/agy_create" \
             -H "Content-Type: application/json" \
             -H "x-vercel-protection-bypass: $BYPASS" \
@@ -77,7 +78,8 @@ jobs:
         run: |
           set -e
           for i in $(seq 1 20); do
-            CODE=$(curl -s -o /tmp/status_resp.json -w "%{http_code}" \
+            CODE=$(curl -sL --max-redirs 5 -b /tmp/agy_cookies.txt -c /tmp/agy_cookies.txt \
+              -o /tmp/status_resp.json -w "%{http_code}" \
               "$SITE/api/agy_status?issue_number=$ISSUE_NUM" \
               -H "x-vercel-protection-bypass: $BYPASS" \
               -H "x-vercel-set-bypass-cookie: true")
