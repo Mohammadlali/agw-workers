@@ -34,14 +34,23 @@ jobs:
     timeout-minutes: 30
 
     steps:
+      # ACC9 (stranger77777777) is retired for good -- Actions disabled
+      # there, never recovered (see mohammadlali0707-stack/agw-workers'
+      # README.md, the fleet's own record of this). Never a default, never
+      # a random pick, and an explicit request for it falls back to a
+      # random pick among 1-8 rather than silently using a dead identity.
       - name: Select AGY Account Token
         id: pick_token
         env:
           ACC_INDEX_INPUT: ${{ inputs.acc_index }}
         run: |
           IDX="$ACC_INDEX_INPUT"
+          if [ "$IDX" = "9" ]; then
+            echo "::warning::acc_index=9 (ACC9) is retired and never valid -- picking a random other account instead"
+            IDX="0"
+          fi
           if [ "$IDX" = "0" ]; then
-            IDX=$(( (RANDOM % 9) + 1 ))
+            IDX=$(( (RANDOM % 8) + 1 ))
           fi
           echo "acc_idx=$IDX" >> $GITHUB_OUTPUT
           echo "Selected account: acc${IDX}"
@@ -84,7 +93,10 @@ jobs:
             6) TOKEN_B64="${{ secrets.AGW_TOKEN_ACC6 }}" ;;
             7) TOKEN_B64="${{ secrets.AGW_TOKEN_ACC7 }}" ;;
             8) TOKEN_B64="${{ secrets.AGW_TOKEN_ACC8 }}" ;;
-            9) TOKEN_B64="${{ secrets.AGW_TOKEN_ACC9 }}" ;;
+            # ACC9 deliberately has no case -- retired for good, see the
+            # comment on "Select AGY Account Token" above. A run that
+            # somehow still asks for it gets no token and fails loudly on
+            # auth, rather than silently using a dead/stale credential.
           esac
 
           echo "$TOKEN_B64" | base64 -d > ~/.gemini/antigravity-cli/antigravity-oauth-token
