@@ -19,7 +19,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 3
     env:
-      GH_TOKEN: ${{ secrets.ACC0 }}
+      GH_TOKEN: ${{ secrets.ACC0_PAT }}
     steps:
       - name: Create the gist
         run: |
