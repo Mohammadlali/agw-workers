@@ -8,6 +8,18 @@ name: Test the live @agy chat widget (via Vercel Protection Bypass)
 # endpoints server-side with the bypass header and prints back only the
 # non-secret parts of the response (issue numbers, urls, reply bodies),
 # same pattern as every other cross-account credential in this fleet.
+#
+# 2026-09-12: the original Vercel project/account hit a limit, so the
+# owner created a NEW Vercel account/project (domain status2.airboxvip.top)
+# and put new credentials in this repo's own secrets, suffixed _NEW:
+# VERCEL_TOKEN_NEW / VERCEL_ORG_ID_NEW / VERCEL_PROJECT_ID_NEW (deploy)
+# and VERCEL_PROTECTION_BYPASS_NEW (test bypass, same role as the old
+# VERCEL_PROTECTION_BYPASS). This workflow now deploys status-dashboard's
+# current code to that NEW project first (a brand new project has nothing
+# running yet), then runs the same create+poll chat test against the new
+# domain. VERCEL_ORG_ID/VERCEL_PROJECT_ID are the Vercel CLI's own
+# documented non-interactive-link env vars -- setting them skips
+# `vercel link` entirely, no .vercel/project.json needed.
 
 on:
   workflow_dispatch:
@@ -28,15 +40,70 @@ on:
 jobs:
   test-live-chat:
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 12
     env:
-      BYPASS: ${{ secrets.VERCEL_PROTECTION_BYPASS }}
-      SITE: https://status.airboxvip.top
+      BYPASS: ${{ secrets.VERCEL_PROTECTION_BYPASS_NEW }}
+      SITE: https://status2.airboxvip.top
+      ACC0_PAT: ${{ secrets.ACC0_PAT }}
+      VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN_NEW }}
+      VERCEL_ORG_ID: ${{ secrets.VERCEL_ORG_ID_NEW }}
+      VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID_NEW }}
     steps:
       - name: Guard
         run: |
           set -e
-          if [ -z "$BYPASS" ]; then echo "::error::secrets.VERCEL_PROTECTION_BYPASS is not set"; exit 1; fi
+          if [ -z "$BYPASS" ]; then echo "::error::secrets.VERCEL_PROTECTION_BYPASS_NEW is not set"; exit 1; fi
+          if [ -z "$VERCEL_TOKEN" ]; then echo "::error::secrets.VERCEL_TOKEN_NEW is not set"; exit 1; fi
+          if [ -z "$VERCEL_ORG_ID" ]; then echo "::error::secrets.VERCEL_ORG_ID_NEW is not set"; exit 1; fi
+          if [ -z "$VERCEL_PROJECT_ID" ]; then echo "::error::secrets.VERCEL_PROJECT_ID_NEW is not set"; exit 1; fi
+
+      - name: Clone status-dashboard
+        run: |
+          set -e
+          AUTH_HEADER="AUTHORIZATION: basic $(printf 'x-access-token:%s' "$ACC0_PAT" | base64 -w0)"
+          git -c http.https://github.com/.extraHeader="$AUTH_HEADER" \
+            clone --branch main --single-branch --depth 1 \
+            "https://github.com/Mohammadlali/status-dashboard.git" /tmp/status-dashboard-new
+
+      - name: Deploy to the new Vercel project
+        id: deploy
+        run: |
+          set -e
+          cd /tmp/status-dashboard-new
+          echo "Deploying to new Vercel project (VERCEL_PROJECT_ID=$VERCEL_PROJECT_ID)..."
+          DEPLOY_OUTPUT=""
+          if npx --yes vercel build --prod --token="$VERCEL_TOKEN" --yes; then
+            DEPLOY_OUTPUT=$(npx --yes vercel deploy --prebuilt --prod --token="$VERCEL_TOKEN" --yes)
+          else
+            DEPLOY_OUTPUT=$(timeout 180 npx --yes vercel deploy --prod --token="$VERCEL_TOKEN" --yes || echo "")
+          fi
+          echo "Deployment raw output: $DEPLOY_OUTPUT"
+          DEPLOY_URL=$(echo "$DEPLOY_OUTPUT" | grep -Eo 'https://[a-zA-Z0-9.-]+\.vercel\.app' | head -n 1)
+          if [ -z "$DEPLOY_URL" ]; then
+            if [ -n "$DEPLOY_OUTPUT" ]; then
+              DEPLOY_URL="$DEPLOY_OUTPUT"
+            else
+              echo "::error::No deployment URL retrieved."
+              exit 1
+            fi
+          fi
+
+          SUBDOMAIN="status2.airboxvip.top"
+          echo "Assigning domain alias $SUBDOMAIN to $DEPLOY_URL..."
+          ALIAS_OK=false
+          for attempt in $(seq 1 20); do
+            if npx --yes vercel alias set "$DEPLOY_URL" "$SUBDOMAIN" --token="$VERCEL_TOKEN"; then
+              ALIAS_OK=true
+              break
+            fi
+            echo "Alias attempt $attempt failed (deployment likely not ready yet, or domain not added to this Vercel project yet); retrying in 15s..."
+            sleep 15
+          done
+          if [ "$ALIAS_OK" != "true" ]; then
+            echo "::error::Could not assign domain alias after 20 attempts -- check that $SUBDOMAIN is added as a domain on this Vercel project."
+            exit 1
+          fi
+          echo "Deployed and aliased to https://$SUBDOMAIN"
 
       - name: POST /api/agy_create
         id: create
