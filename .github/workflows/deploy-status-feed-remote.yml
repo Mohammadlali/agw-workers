@@ -70,9 +70,9 @@ jobs:
           AUTH_HEADER="AUTHORIZATION: basic $(printf 'x-access-token:%s' "$ACC0_PAT" | base64 -w0)"
           git -c http.https://github.com/.extraHeader="$AUTH_HEADER" \
             clone --branch main --single-branch \
-            "https://github.com/Mohammadlali/status-dashboard.git" /tmp/sd
-          git -C /tmp/sd config user.email "status-feed@claud-cloud.local"
-          git -C /tmp/sd config user.name "Status Feed Bot"
+            "https://github.com/Mohammadlali/status-dashboard.git" /tmp/status-dashboard
+          git -C /tmp/status-dashboard config user.email "status-feed@claud-cloud.local"
+          git -C /tmp/status-dashboard config user.name "Status Feed Bot"
 
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -95,12 +95,12 @@ jobs:
           VAPID_PUBLIC_KEY: ${{ secrets.VAPID_PUBLIC_KEY }}
         run: |
           SUBDOMAIN="${{ inputs.subdomain || 'status.airboxvip.top' }}"
-          cd /tmp/sd
+          cd /tmp/status-dashboard
           python3 Tools/collect_status_feed.py --out status.json --subdomain "$SUBDOMAIN"
 
       - name: Commit and push updated status.json
         run: |
-          cd /tmp/sd
+          cd /tmp/status-dashboard
           BRANCH="main"
           if git diff --quiet -- status.json; then
             echo "status.json unchanged -- nothing to commit."
@@ -140,7 +140,7 @@ jobs:
           CF_ACCOUNT_ID: ${{ secrets.CF_ACCOUNT_ID }}
         run: |
           SUBDOMAIN="${{ inputs.subdomain || 'status.airboxvip.top' }}"
-          cd /tmp/sd
+          cd /tmp/status-dashboard
           python3 Tools/ensure_cloudflare_dns.py --zone airboxvip.top --subdomain "$SUBDOMAIN" --target cname.vercel-dns.com
 
       - name: Deploy to Vercel
@@ -149,12 +149,19 @@ jobs:
           VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
         run: |
           SUBDOMAIN="${{ inputs.subdomain || 'status.airboxvip.top' }}"
-          cd /tmp/sd
+          cd /tmp/status-dashboard
           if [ -z "$VERCEL_TOKEN" ]; then
             echo "VERCEL_TOKEN not provided -- skipping Vercel deployment."
             exit 0
           fi
-          echo "Deploying repo root to Vercel project 'claud-cloud-status'..."
+          # Explicit link by project name -- do NOT rely on Vercel's
+          # directory-name auto-link heuristic. A prior run of this
+          # workflow, cloning into a dir literally named "sd", let Vercel
+          # silently CREATE a brand-new unrelated project called "sd" and
+          # alias the live domain to it instead of the real
+          # "status-dashboard" project -- caught and fixed same day.
+          npx --yes vercel link --yes --project status-dashboard --token="$VERCEL_TOKEN"
+          echo "Deploying repo root to Vercel project 'status-dashboard'..."
           DEPLOY_OUTPUT=""
           if npx --yes vercel build --prod --token="$VERCEL_TOKEN" --yes; then
             DEPLOY_OUTPUT=$(npx --yes vercel deploy --prebuilt --prod --token="$VERCEL_TOKEN" --yes)
