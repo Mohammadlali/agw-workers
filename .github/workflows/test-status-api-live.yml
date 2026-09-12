@@ -7,15 +7,22 @@ name: Test the live /api/status endpoint (via Vercel Protection Bypass)
 # verify the live endpoint from outside a real browser session.
 
 on:
-  workflow_dispatch: {}
+  workflow_dispatch:
+    inputs:
+      target:
+        description: "Which deployment to test"
+        required: false
+        default: "old"
+        type: choice
+        options: ["old", "new"]
 
 jobs:
   test-status-api:
     runs-on: ubuntu-latest
     timeout-minutes: 3
     env:
-      BYPASS: ${{ secrets.VERCEL_PROTECTION_BYPASS }}
-      SITE: https://status.airboxvip.top
+      BYPASS: ${{ inputs.target == 'new' && secrets.VERCEL_PROTECTION_BYPASS_NEW || secrets.VERCEL_PROTECTION_BYPASS }}
+      SITE: ${{ inputs.target == 'new' && 'https://status2.airboxvip.top' || 'https://status.airboxvip.top' }}
     steps:
       - name: Guard
         run: |
