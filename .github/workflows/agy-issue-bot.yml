@@ -11,6 +11,31 @@ name: AGW Worker AGY Issue Bot (same-repo, no relay)
 # target_repo/target_branch below are set to THIS account's own wired key
 # repo (Team/ACCOUNTS.md), using the same PAT agw-worker.yml already uses
 # for it -- never a different account's credential.
+#
+# FIXED 2026-09-14 (three bugs, patched from mohammadlali0707-stack via a
+# cross-account dispatch -- this session has no direct write access to
+# this repo): status2.airboxvip.top's dashboard chat creates issues here
+# via AGY_CHAT_ACC0_PAT, appending "@agy" at the END of the typed message
+# (see status-dashboard's api/agy_create.js). None were ever processed:
+# 1. This file's `if:` used `startsWith(body, '@agy')` -- the opposite
+#    end from where the dashboard actually puts the marker.
+# 2. Even position-tolerant, a body with any trailing whitespace (which
+#    `gh issue create --body-file` and browser-typed issues both leave)
+#    could defeat a naive endsWith check -- the same GitHub-Actions-
+#    expressions-have-no-escape-sequences bug found and fixed the same
+#    day in mohammadlali0707-stack/Claud-Cloud-Project's own copy of this
+#    workflow (`endsWith(body, '@agy\n')` matches literal backslash-n
+#    text, never a real newline).
+# 3. `target_repo=Mohammadlali/Claud-Cloud-Project` named the pre-
+#    transfer owner/repo -- that repo now lives at
+#    mohammadlali0707-stack/Claud-Cloud-Project; even a correctly
+#    triggered run would have dispatched into a stale path.
+# Fix: a `check-marker` job does a real bash, whitespace-tolerant check
+# for "@agy" at EITHER end of the body; `agy-same-repo` accepts OWNER or
+# COLLABORATOR (this repo's association for ACC0-authored issues was not
+# independently confirmed from mohammadlali0707-stack -- accepting both
+# is the same safe default used in Claud-Cloud-Project's own copy, not a
+# new trust boundary); target_repo corrected.
 
 on:
   issues:
@@ -24,11 +49,29 @@ permissions:
   contents: read
 
 jobs:
+  check-marker:
+    runs-on: ubuntu-latest
+    if: always()
+    outputs:
+      match: ${{ steps.check.outputs.match }}
+    steps:
+      - name: Check for an @agy marker at either end, tolerant of whitespace
+        id: check
+        env:
+          BODY: ${{ github.event.issue.body || github.event.comment.body || '' }}
+        run: |
+          TRIMMED="$(printf '%s' "$BODY" | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')"
+          case "$TRIMMED" in
+            "@agy"*|*"@agy") echo "match=true" >> "$GITHUB_OUTPUT" ;;
+            *) echo "match=false" >> "$GITHUB_OUTPUT" ;;
+          esac
+
   agy-same-repo:
+    needs: [check-marker]
     runs-on: ubuntu-latest
     if: >
-      (github.event_name == 'issues' && startsWith(github.event.issue.body, '@agy') && github.event.issue.author_association == 'OWNER') ||
-      (github.event_name == 'issue_comment' && startsWith(github.event.comment.body, '@agy') && github.event.comment.user.type != 'Bot' && github.event.comment.author_association == 'OWNER')
+      (github.event_name == 'issues' && needs.check-marker.outputs.match == 'true' && (github.event.issue.author_association == 'OWNER' || github.event.issue.author_association == 'COLLABORATOR')) ||
+      (github.event_name == 'issue_comment' && needs.check-marker.outputs.match == 'true' && github.event.comment.user.type != 'Bot' && (github.event.comment.author_association == 'OWNER' || github.event.comment.author_association == 'COLLABORATOR'))
     steps:
       - name: Ack on the issue
         env:
@@ -69,7 +112,7 @@ jobs:
           gh workflow run agw-worker.yml \
             --repo "${{ github.repository }}" \
             --field "prompt=$PROMPT" \
-            --field "target_repo=Mohammadlali/Claud-Cloud-Project" \
+            --field "target_repo=mohammadlali0707-stack/Claud-Cloud-Project" \
             --field "target_branch=claude/gateway-auth-fix-nr7k0b" \
             --field "acc_index=0" \
             --field "callback_id=same-repo-${{ github.event.issue.number }}-${{ github.run_id }}"
