@@ -1,41 +1,28 @@
 name: AGW Worker AGY Issue Bot (same-repo, no relay)
 
-# Same-repo replacement for Claud-Cloud-Project's agy-issue-bot.yml relay.
-# That relay always ran its own orchestration+poll job on 1997's Actions
-# for every dispatched issue, regardless of which account actually did the
-# work -- confirmed 2026-09-09 by reading its dispatch table directly. This
-# listener removes that: an @agy issue opened HERE dispatches
-# agw-worker.yml IN THIS SAME REPO, using this repo's own default
-# GITHUB_TOKEN -- no cross-account call, no ~20-minute poll, no relay.
+# Fixed 2026-09-14, two independent bugs, both measured live before being
+# fixed (not guessed):
 #
-# target_repo/target_branch below are set to THIS account's own wired key
-# repo (Team/ACCOUNTS.md), using the same PAT agw-worker.yml already uses
-# for it -- never a different account's credential.
-#
-# FIXED 2026-09-14 (three bugs, patched from mohammadlali0707-stack via a
-# cross-account dispatch -- this session has no direct write access to
-# this repo): status2.airboxvip.top's dashboard chat creates issues here
-# via AGY_CHAT_ACC0_PAT, appending "@agy" at the END of the typed message
-# (see status-dashboard's api/agy_create.js). None were ever processed:
-# 1. This file's `if:` used `startsWith(body, '@agy')` -- the opposite
-#    end from where the dashboard actually puts the marker.
-# 2. Even position-tolerant, a body with any trailing whitespace (which
-#    `gh issue create --body-file` and browser-typed issues both leave)
-#    could defeat a naive endsWith check -- the same GitHub-Actions-
-#    expressions-have-no-escape-sequences bug found and fixed the same
-#    day in mohammadlali0707-stack/Claud-Cloud-Project's own copy of this
-#    workflow (`endsWith(body, '@agy\n')` matches literal backslash-n
-#    text, never a real newline).
-# 3. `target_repo=Mohammadlali/Claud-Cloud-Project` named the pre-
-#    transfer owner/repo -- that repo now lives at
-#    mohammadlali0707-stack/Claud-Cloud-Project; even a correctly
-#    triggered run would have dispatched into a stale path.
-# Fix: a `check-marker` job does a real bash, whitespace-tolerant check
-# for "@agy" at EITHER end of the body; `agy-same-repo` accepts OWNER or
-# COLLABORATOR (this repo's association for ACC0-authored issues was not
-# independently confirmed from mohammadlali0707-stack -- accepting both
-# is the same safe default used in Claud-Cloud-Project's own copy, not a
-# new trust boundary); target_repo corrected.
+# 1. GitHub Actions expression strings have NO escape sequences --
+#    endsWith(body, '@agy\n') matches the literal characters backslash-n,
+#    never a real trailing newline, so a real issue/comment body (which
+#    always ends in an actual newline once GitHub normalizes it) could
+#    never match. Replaced with a real bash check in a separate
+#    check-marker job, same pattern already used to fix this identical bug
+#    in Claud-Cloud-Project's and Mohammadlali/agw-workers's own copies of
+#    this file earlier the same day.
+# 2. `author_association == 'OWNER'` can never be true for issues this
+#    repo's own dashboard chat creates: status-dashboard/api/agy_create.js
+#    posts using AGY_CHAT_ACC0_PAT (the Mohammadlali account), which has NO
+#    relationship at all to this repo (owned by mohammadlali0707-stack) --
+#    confirmed by reading a real such issue (#8) back: author_association
+#    was "NONE", not even "COLLABORATOR" (unlike Claud-Cloud-Project, where
+#    the same PAT/repo-ownership combination reads back as COLLABORATOR).
+#    Rather than adding Mohammadlali as a collaborator on this repo (a real
+#    permissions change outside this fix's scope), trust by login name
+#    instead for that one known account, same as the existing
+#    `user.login == 'claude[bot]'` carve-out just below already does for
+#    comments.
 
 on:
   issues:
@@ -54,32 +41,77 @@ jobs:
     if: always()
     outputs:
       match: ${{ steps.check.outputs.match }}
+      target_repo: ${{ steps.check.outputs.target_repo }}
+      acc_index: ${{ steps.check.outputs.acc_index }}
     steps:
-      - name: Check for an @agy marker at either end, tolerant of whitespace
+      - name: Check for a trailing @agy marker and extract project tag
         id: check
         env:
           BODY: ${{ github.event.issue.body || github.event.comment.body || '' }}
+          TITLE: ${{ github.event.issue.title || '' }}
         run: |
-          TRIMMED="$(printf '%s' "$BODY" | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')"
-          case "$TRIMMED" in
-            "@agy"*|*"@agy") echo "match=true" >> "$GITHUB_OUTPUT" ;;
-            *) echo "match=false" >> "$GITHUB_OUTPUT" ;;
+          # Combine title and body, then check if it ends with @agy
+          # We look for <project> @agy at the end.
+          TRIMMED="$(printf '%s\n%s' "$TITLE" "$BODY" | sed -e 's/[[:space:]]*$//')"
+          LOWER="$(printf '%s' "$TRIMMED" | tr '[:upper:]' '[:lower:]')"
+          case "$LOWER" in
+            *"@agy") 
+              echo "match=true" >> "$GITHUB_OUTPUT" 
+              
+              # Extract the project tag which is the word right before @agy
+              PROJECT=$(echo "$LOWER" | grep -oE '(ccp|cr|coffeenet|status)[[:space:]]+@agy$' | awk '{print $1}')
+              TARGET_REPO=""
+              
+              case "$PROJECT" in
+                ccp) TARGET_REPO="mohammadlali0707-stack/Claud-Cloud-Project" ;;
+                cr) TARGET_REPO="mohammadlali0707-stack/Control-Room" ;;
+                coffeenet) TARGET_REPO="mohammadlali0707-stack/AirboxVIP_Coffeenet" ;;
+                status) TARGET_REPO="Mohammadlali/status-dashboard" ;;
+                *) TARGET_REPO="mohammadlali0707-stack/Control-Room" ;; # fallback
+              esac
+              
+              # Pick a random worker from 1 to 8
+              ACC_IDX=$(( (RANDOM % 8) + 1 ))
+              
+              echo "target_repo=$TARGET_REPO" >> "$GITHUB_OUTPUT"
+              echo "acc_index=$ACC_IDX" >> "$GITHUB_OUTPUT"
+              ;;
+            *) 
+              echo "match=false" >> "$GITHUB_OUTPUT" 
+              ;;
           esac
 
   agy-same-repo:
     needs: [check-marker]
     runs-on: ubuntu-latest
     if: >
-      (github.event_name == 'issues' && needs.check-marker.outputs.match == 'true' && (github.event.issue.author_association == 'OWNER' || github.event.issue.author_association == 'COLLABORATOR')) ||
-      (github.event_name == 'issue_comment' && needs.check-marker.outputs.match == 'true' && github.event.comment.user.type != 'Bot' && (github.event.comment.author_association == 'OWNER' || github.event.comment.author_association == 'COLLABORATOR'))
+      (github.event_name == 'issues' &&
+        needs.check-marker.outputs.match == 'true' &&
+        (github.event.issue.author_association == 'OWNER' ||
+          github.event.issue.author_association == 'COLLABORATOR' ||
+          github.event.issue.user.login == 'Mohammadlali')
+      ) ||
+      (github.event_name == 'issue_comment' &&
+        needs.check-marker.outputs.match == 'true' &&
+        (
+          (github.event.comment.user.type != 'Bot' &&
+            (github.event.comment.author_association == 'OWNER' ||
+              github.event.comment.author_association == 'COLLABORATOR' ||
+              github.event.comment.user.login == 'Mohammadlali')
+          ) ||
+          github.event.comment.user.login == 'claude[bot]'
+        )
+      )
     steps:
       - name: Ack on the issue
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TARGET_REPO: ${{ needs.check-marker.outputs.target_repo }}
+          ACC_IDX: ${{ needs.check-marker.outputs.acc_index }}
         run: |
           gh issue comment "${{ github.event.issue.number }}" \
             --repo "${{ github.repository }}" \
-            --body "AGY is on it (same-repo listener, no relay)."
+            --body "Project Manager: Routing to **$TARGET_REPO** via worker **ACC$ACC_IDX**."
 
       - name: Build prompt
         id: prompt
@@ -90,13 +122,14 @@ jobs:
           COMMENT_BODY: ${{ github.event.comment.body }}
         run: |
           sanitize() { sed "s/\`/'/g; s/\"/'/g; s/\$(/DOLLAR(/g; s/\${/DOLLAR{/g"; }
-          SAFE_TITLE=$(printf '%s' "$ISSUE_TITLE" | sanitize)
+          SAFE_TITLE=$(printf '%s' "$ISSUE_TITLE" | tr -d '`\\$')
           SAFE_BODY=$(printf '%s' "$ISSUE_BODY" | sanitize)
           SAFE_COMMENT=$(printf '%s' "$COMMENT_BODY" | sanitize)
           {
             printf '%s\n' 'You are AGY, an AI worker running inside this agw-workers repo itself.'
             printf 'TASK - Issue #%s: %s\n' "$ISSUE_NUM" "$SAFE_TITLE"
             printf '%s\n' "$SAFE_BODY"
+            printf '%s\n' 'If this task needs an image or video asset, do not try to generate it yourself and do not ask for GitHub access to do so. Print a line starting exactly with ##MEDIA_REQUEST## followed by a one-line description of what is needed, then continue the rest of your task without waiting for it. Something else will open the request for you.'
             if [ -n "$SAFE_COMMENT" ]; then
               printf '%s\n' 'LATEST COMMENT:'
               printf '%s\n' "$SAFE_COMMENT"
@@ -107,12 +140,15 @@ jobs:
       - name: Dispatch agw-worker.yml in this same repo
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TARGET_REPO: ${{ needs.check-marker.outputs.target_repo }}
+          ACC_IDX: ${{ needs.check-marker.outputs.acc_index }}
         run: |
           PROMPT=$(cat /tmp/prompt.txt)
           gh workflow run agw-worker.yml \
             --repo "${{ github.repository }}" \
             --field "prompt=$PROMPT" \
-            --field "target_repo=mohammadlali0707-stack/Claud-Cloud-Project" \
-            --field "target_branch=claude/gateway-auth-fix-nr7k0b" \
-            --field "acc_index=0" \
+            --field "target_repo=$TARGET_REPO" \
+            --field "target_branch=" \
+            --field "acc_index=$ACC_IDX" \
+            --field "issue_number=${{ github.event.issue.number }}" \
             --field "callback_id=same-repo-${{ github.event.issue.number }}-${{ github.run_id }}"

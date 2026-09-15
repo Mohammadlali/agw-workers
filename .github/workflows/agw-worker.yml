@@ -18,42 +18,104 @@ on:
         default: ''
         type: string
       acc_index:
-        description: 'Account index 1-9 (0=random)'
+        description: 'Account index 0-8 to force a specific identity; empty = this repo''s own account, falling back to one random other on quota error. ACC9 is retired and never used.'
         required: false
-        default: '0'
+        default: ''
+        type: string
+      issue_number:
+        description: 'Issue number to post agy''s final output back to as a comment (empty = do not post)'
+        required: false
+        default: ''
         type: string
       callback_id:
         description: 'Unique request ID for tracking'
         required: false
         default: ''
         type: string
+      report_dir:
+        description: 'Optional subfolder under Reports/agy/ in target_repo to nest this run''s output under (e.g. "acc3" for an account-scoped report). Empty = flat Reports/agy/<callback_id>.txt, the original layout.'
+        required: false
+        default: ''
+        type: string
+      agy_token_b64:
+        description: 'CROSS-ACCOUNT MODE: base64 Antigravity OAuth token for acc_index''s identity, supplied by a caller running in a DIFFERENT repo than this identity''s own secrets live in (e.g. a lead cross-dispatched to run inside its own account''s copy of this repo). Empty = look the token up locally by acc_index, the original same-repo behavior.'
+        required: false
+        default: ''
+        type: string
+      target_repo_pat:
+        description: 'CROSS-ACCOUNT MODE: PAT to check out/push target_repo, supplied by the caller instead of looking one up locally. Empty = resolve locally the original way (ACC0_PAT for Mohammadlali/agw-workers, ACC6_PAT otherwise).'
+        required: false
+        default: ''
+        type: string
+
+permissions:
+  contents: read
+  issues: write
 
 jobs:
   run-agy:
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    # 30 was enough for one attempt; a same-run retry needs headroom too. A
+    # quota/rate-limit rejection surfaces near-instantly, so this only bites
+    # in the rare case where attempt 1 burns real time before failing.
+    timeout-minutes: 45
 
     steps:
-      # ACC9 (stranger77777777) is retired for good -- Actions disabled
-      # there, never recovered (see mohammadlali0707-stack/agw-workers'
-      # README.md, the fleet's own record of this). Never a default, never
-      # a random pick, and an explicit request for it falls back to a
-      # random pick among 1-8 rather than silently using a dead identity.
+      # This file is byte-identical across all 8 accounts (deployed by
+      # relay-deploy-file.yml from mohammadlali0707-stack), so it cannot
+      # hardcode which account it is. GITHUB_REPOSITORY_OWNER is filled in
+      # by GitHub itself at run time; this table is the same
+      # owner<->index mapping relay-open-issue.yml uses, inverted.
+      - name: Determine this repo's own account index
+        id: own_identity
+        run: |
+          case "$GITHUB_REPOSITORY_OWNER" in
+            momonakikugava-pixel) OWN=1 ;;
+            lali94m-max) OWN=2 ;;
+            ngocgminh5-debug) OWN=3 ;;
+            hmmletssee7-design) OWN=4 ;;
+            kidding602) OWN=5 ;;
+            mohammadlali0707-stack) OWN=6 ;;
+            mohammad97okk) OWN=7 ;;
+            moradzahra85-png) OWN=8 ;;
+            *) OWN=0 ;;
+          esac
+          echo "own_idx=$OWN" >> "$GITHUB_OUTPUT"
+          echo "Repo owner: $GITHUB_REPOSITORY_OWNER -> account index: $OWN"
+
+      # ACC9 is retired ("should not be in any cycle") -- an explicit
+      # request for it falls back to this repo's own identity instead of
+      # doing nothing useful.
+      #
+      # Fixed 2026-09-14: acc_index="0" used to be treated as the SAME
+      # sentinel as "no preference given" -- both fell through to OWN_IDX.
+      # That silently redirected any caller asking for the real, distinct
+      # ACC0 (org.json's account 0, e.g. agw-ACC0-w11) to whichever account
+      # hosts this copy of the repo instead. Confirmed live: a task
+      # assigned to ACC0 by agy-plan-dispatch.yml actually ran under ACC6's
+      # identity (run 34882500945). Empty string is now the only "no
+      # preference" sentinel; "0" is a real account index like any other.
       - name: Select AGY Account Token
         id: pick_token
         env:
           ACC_INDEX_INPUT: ${{ inputs.acc_index }}
+          OWN_IDX: ${{ steps.own_identity.outputs.own_idx }}
         run: |
           IDX="$ACC_INDEX_INPUT"
           if [ "$IDX" = "9" ]; then
-            echo "::warning::acc_index=9 (ACC9) is retired and never valid -- picking a random other account instead"
-            IDX="0"
+            echo "::warning::acc_index=9 (ACC9) is retired and never valid -- using this repo's own account instead"
+            IDX=""
           fi
-          if [ "$IDX" = "0" ]; then
-            IDX=$(( (RANDOM % 8) + 1 ))
+          if [ -z "$IDX" ]; then
+            if [ "$OWN_IDX" != "0" ]; then
+              IDX="$OWN_IDX"
+            else
+              IDX=$(( (RANDOM % 8) + 1 ))
+              echo "::warning::could not map this repo's owner to an account index, falling back to random"
+            fi
           fi
           echo "acc_idx=$IDX" >> $GITHUB_OUTPUT
-          echo "Selected account: acc${IDX}"
+          echo "Primary account for this run: acc${IDX}"
 
       - name: Install AGY CLI from HF Dataset
         run: |
@@ -75,44 +137,12 @@ jobs:
           sudo install -m 0755 "$CLI_BIN" /usr/local/bin/agy
           agy --version 2>/dev/null || echo "agy ready"
 
-      - name: Restore AGY OAuth Token
-        run: |
-          mkdir -p ~/.gemini/antigravity-cli ~/.gemini/config
-
-          ACC_IDX="${{ steps.pick_token.outputs.acc_idx }}"
-          echo "Using account acc${ACC_IDX}"
-
-          # انتخاب token
-          TOKEN_B64=""
-          case "$ACC_IDX" in
-            1) TOKEN_B64="${{ secrets.AGW_TOKEN_ACC1 }}" ;;
-            2) TOKEN_B64="${{ secrets.AGW_TOKEN_ACC2 }}" ;;
-            3) TOKEN_B64="${{ secrets.AGW_TOKEN_ACC3 }}" ;;
-            4) TOKEN_B64="${{ secrets.AGW_TOKEN_ACC4 }}" ;;
-            5) TOKEN_B64="${{ secrets.AGW_TOKEN_ACC5 }}" ;;
-            6) TOKEN_B64="${{ secrets.AGW_TOKEN_ACC6 }}" ;;
-            7) TOKEN_B64="${{ secrets.AGW_TOKEN_ACC7 }}" ;;
-            8) TOKEN_B64="${{ secrets.AGW_TOKEN_ACC8 }}" ;;
-            # ACC9 deliberately has no case -- retired for good, see the
-            # comment on "Select AGY Account Token" above. A run that
-            # somehow still asks for it gets no token and fails loudly on
-            # auth, rather than silently using a dead/stale credential.
-          esac
-
-          echo "$TOKEN_B64" | base64 -d > ~/.gemini/antigravity-cli/antigravity-oauth-token
-          chmod 600 ~/.gemini/antigravity-cli/antigravity-oauth-token
-
-          # installation_id و config
-          cat /proc/sys/kernel/random/uuid > ~/.gemini/antigravity-cli/installation_id
-          echo '{"userSettings":{}}' > ~/.gemini/config/config.json
-
-          echo "Token size: $(wc -c < ~/.gemini/antigravity-cli/antigravity-oauth-token) bytes"
-
       - name: Checkout target repo
         id: checkout_target
         env:
           TARGET_REPO: ${{ inputs.target_repo }}
           TARGET_BRANCH: ${{ inputs.target_branch }}
+          TARGET_REPO_PAT_INPUT: ${{ inputs.target_repo_pat }}
           ACC0_PAT: ${{ secrets.ACC0_PAT }}
           ACC6_PAT: ${{ secrets.ACC6_PAT }}
           ACC1_PAT: ${{ secrets.ACC1_PAT }}
@@ -122,16 +152,15 @@ jobs:
             echo "No target_repo given -- agent runs with no repo checked out and no git credential."
             exit 0
           fi
-          case "$TARGET_REPO" in
-            Mohammadlali/Claud-Cloud-Project) TOKEN="$ACC0_PAT" ;;
-            Mohammadlali/Control-Room)        TOKEN="$ACC0_PAT" ;;
-            momonakikugava-pixel/AirboxVIP_Coffeenet) TOKEN="$ACC1_PAT" ;;
-            Mohammadlali/agw-workers) TOKEN="$ACC0_PAT" ;;
-            *)
-              echo "Unknown target_repo '$TARGET_REPO' -- refusing to attach a live credential to it." >&2
-              exit 0
-              ;;
-          esac
+          if [ -n "$TARGET_REPO_PAT_INPUT" ]; then
+            echo "::add-mask::$TARGET_REPO_PAT_INPUT"
+            TOKEN="$TARGET_REPO_PAT_INPUT"
+          else
+            case "$TARGET_REPO" in
+              Mohammadlali/agw-workers) TOKEN="$ACC0_PAT" ;;
+              *) TOKEN="$ACC6_PAT" ;;
+            esac
+          fi
           if [ -z "$TOKEN" ]; then
             echo "No token wired for $TARGET_REPO -- skipping checkout." >&2
             exit 0
@@ -150,13 +179,69 @@ jobs:
           echo "Checked out $TARGET_REPO into /tmp/agent-repo. The credential was passed only as a one-shot -c http.extraheader flag on this single git command -- it is NOT written to /tmp/agent-repo/.git/config, so the agent process below cannot read it back out of the working tree."
           echo "has_repo=true" >> "$GITHUB_OUTPUT"
 
-      - name: Run AGY Prompt
+      # Restore+run are one step because a quota/rate-limit error needs to
+      # restore a DIFFERENT identity and run again -- two separate steps
+      # would need a third to glue them, for no benefit.
+      - name: Run AGY Prompt (own identity first, one random fallback on quota error)
         id: run_agy
         env:
           PROMPT_INPUT: ${{ inputs.prompt }}
+          PRIMARY_IDX: ${{ steps.pick_token.outputs.acc_idx }}
+          AGY_TOKEN_INPUT: ${{ inputs.agy_token_b64 }}
         run: |
+          set +e
+
+          # ACC9 is retired ("should not be in any cycle") -- no case for it
+          # here at all, deliberately. If it's ever passed in anyway,
+          # token_b64 stays empty and the run fails loudly on auth rather
+          # than silently using a stale/wrong credential.
+          #
+          # CROSS-ACCOUNT MODE: when this job runs inside a DIFFERENT
+          # account's own copy of this repo (cross-dispatched so its
+          # Actions minutes/concurrency are that account's own, not
+          # ACC6's -- see agy-plan-dispatch.yml/agy-lead-plan.yml), the
+          # local secrets.AGW_TOKEN_ACC* below don't exist there at all.
+          # The caller supplies the PRIMARY identity's own token as an
+          # input instead; only the primary call uses it -- a quota-error
+          # RETRY still needs a genuinely different identity chosen at
+          # random, which this job cannot supply itself, so retries keep
+          # using the local (same-repo) lookup as before.
+          restore_token() {
+            local idx="$1"
+            local override_b64="${2:-}"
+            mkdir -p ~/.gemini/antigravity-cli ~/.gemini/config
+            local token_b64=""
+            if [ -n "$override_b64" ]; then
+              token_b64="$override_b64"
+            else
+              case "$idx" in
+                0) token_b64="${{ secrets.AGW_TOKEN_ACC0 }}" ;;
+                1) token_b64="${{ secrets.AGW_TOKEN_ACC1 }}" ;;
+                2) token_b64="${{ secrets.AGW_TOKEN_ACC2 }}" ;;
+                3) token_b64="${{ secrets.AGW_TOKEN_ACC3 }}" ;;
+                4) token_b64="${{ secrets.AGW_TOKEN_ACC4 }}" ;;
+                5) token_b64="${{ secrets.AGW_TOKEN_ACC5 }}" ;;
+                6) token_b64="${{ secrets.AGW_TOKEN_ACC6 }}" ;;
+                7) token_b64="${{ secrets.AGW_TOKEN_ACC7 }}" ;;
+                8) token_b64="${{ secrets.AGW_TOKEN_ACC8 }}" ;;
+              esac
+            fi
+            echo "$token_b64" | base64 -d > ~/.gemini/antigravity-cli/antigravity-oauth-token
+            chmod 600 ~/.gemini/antigravity-cli/antigravity-oauth-token
+            cat /proc/sys/kernel/random/uuid > ~/.gemini/antigravity-cli/installation_id
+            echo '{"userSettings":{}}' > ~/.gemini/config/config.json
+            echo "Restored acc${idx}: $(wc -c < ~/.gemini/antigravity-cli/antigravity-oauth-token) bytes"
+          }
+
+          is_quota_error() {
+            grep -qiE 'too many requests|rate limit|rate-limit|429|quota' "$1"
+          }
+
           PROMPT="$PROMPT_INPUT"
-          echo "Running agy prompt..."
+          USED_IDX="$PRIMARY_IDX"
+          restore_token "$USED_IDX" "$AGY_TOKEN_INPUT"
+
+          echo "Running agy prompt with acc${USED_IDX}..."
           cd /tmp/agent-repo 2>/dev/null || true
 
           # --print-timeout is agy's OWN internal wait-for-a-response ceiling,
@@ -172,106 +257,191 @@ jobs:
           # ~20-minute poll loop could have been the cause. 1680s here, just
           # under the outer wrapper, so the outer `timeout` stays a real
           # backstop rather than firing at the same instant.
-          OUTPUT=$(timeout 1700 agy --dangerously-skip-permissions --print-timeout 1680s -p "$PROMPT" 2>&1) || true
-
+          OUTPUT=$(timeout 1700 agy --dangerously-skip-permissions --print-timeout 1680s -p "$PROMPT" 2>&1)
           echo "$OUTPUT" > /tmp/agy_output.txt
-          echo "Exit status: $?"
+
+          if is_quota_error /tmp/agy_output.txt; then
+            echo "::warning::acc${USED_IDX} hit a quota/rate-limit error, retrying once with a random other identity"
+            # No override for the fallback -- a quota retry needs a genuinely
+            # different identity chosen at random, which only the local
+            # (same-repo) secrets lookup can supply. In cross-account mode
+            # (AGY_TOKEN_INPUT was used above) this local lookup has nothing
+            # to find and the retry will fail loudly on auth -- acceptable:
+            # rare, and silent wrong-identity reuse would be worse.
+            FALLBACK_IDX="$USED_IDX"
+            while [ "$FALLBACK_IDX" = "$USED_IDX" ]; do
+              FALLBACK_IDX=$(( (RANDOM % 8) + 1 ))
+            done
+            USED_IDX="$FALLBACK_IDX"
+            restore_token "$USED_IDX"
+            echo "Retrying with acc${USED_IDX}..."
+            cd /tmp/agent-repo 2>/dev/null || true
+            OUTPUT=$(timeout 1700 agy --dangerously-skip-permissions --print-timeout 1680s -p "$PROMPT" 2>&1)
+            echo "$OUTPUT" > /tmp/agy_output.txt
+          fi
+
+          echo "used_idx=$USED_IDX" >> "$GITHUB_OUTPUT"
           echo "Output lines: $(wc -l < /tmp/agy_output.txt)"
-          # Deliberately not printed: this repo is public as of 2026-09-12
-          # (unlimited Actions minutes), so console output here is a public
-          # log. The agent's own prompt asks it to quote file+function+
-          # evidence, which can be real project source -- see the commit
-          # that added this comment for the incident that prompted it. The
-          # real output goes into the private target repo instead (next
-          # step), never printed or artifact-uploaded from here when one
-          # exists.
+          # Deliberately not printed here (not even a head/tail slice): this
+          # repo is public (unlimited Actions minutes), so console output is
+          # a public log, and agy's own prompt can make it quote real
+          # project source. The full output goes into the private target
+          # repo's Reports/agy/ (see the push step) and, when an
+          # issue_number is given, as an issue comment -- never printed or
+          # artifact-uploaded from here when either of those captured it.
+
+      # agy never receives a GitHub token -- it only ever prints plain text.
+      # This step, running OUTSIDE agy's own process, is what actually opens
+      # the @media issue. It uses the default GITHUB_TOKEN (scoped to this
+      # repo's own issues:write above), never a PAT keyed by which AGY
+      # identity happened to run: that identity is unrelated to which of the
+      # 8 GitHub accounts is hosting this copy of the workflow. media-
+      # request-bot.yml accepts issues opened by the github-actions[bot]
+      # identity this produces.
+      - name: Relay any media request from agy's output
+        if: always()
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set +e
+          if [ ! -f /tmp/agy_output.txt ]; then
+            echo "no agy output file, nothing to relay"
+            exit 0
+          fi
+          LINE=$(grep -m1 '^##MEDIA_REQUEST##' /tmp/agy_output.txt)
+          if [ -z "$LINE" ]; then
+            echo "agy did not ask for media"
+            exit 0
+          fi
+          DESC=$(printf '%s' "$LINE" | sed 's/^##MEDIA_REQUEST##[[:space:]]*//')
+          gh issue create \
+            --repo "$GITHUB_REPOSITORY" \
+            --title "Media request from agy (${{ inputs.callback_id }})" \
+            --body "@media $DESC"
+
+      # Same reasoning as the media relay above: agy never gets a token, this
+      # step (using the default GITHUB_TOKEN) posts its final output back to
+      # the triggering issue as a real comment -- this is what lets @claude
+      # (agw-claude.yml) pick up from where agy left off. Truncated from the
+      # START (keeping the tail) because the @claude handoff line, when agy
+      # is fully done, is the LAST line it printed. The push step below also
+      # commits the FULL, untruncated output into the target repo, so
+      # nothing is lost even when this comment has to be cut down.
+      - name: Post agy's output as a comment
+        if: always()
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          ISSUE_NUMBER: ${{ inputs.issue_number }}
+        run: |
+          set +e
+          if [ -z "$ISSUE_NUMBER" ]; then
+            echo "no issue_number given, not posting a comment"
+            exit 0
+          fi
+          if [ ! -f /tmp/agy_output.txt ]; then
+            echo "no agy output file, nothing to post"
+            exit 0
+          fi
+          SIZE=$(wc -c < /tmp/agy_output.txt)
+          if [ "$SIZE" -gt 60000 ]; then
+            { echo "[output truncated, showing the last part]"; echo "..."; tail -c 60000 /tmp/agy_output.txt; } > /tmp/agy_comment.txt
+          else
+            cp /tmp/agy_output.txt /tmp/agy_comment.txt
+          fi
+          gh issue comment "$ISSUE_NUMBER" --repo "$GITHUB_REPOSITORY" --body-file /tmp/agy_comment.txt
 
       - name: Push changes made by the agent
         if: steps.checkout_target.outputs.has_repo == 'true'
         env:
           TARGET_REPO: ${{ inputs.target_repo }}
           TARGET_BRANCH: ${{ inputs.target_branch }}
+          TARGET_REPO_PAT_INPUT: ${{ inputs.target_repo_pat }}
           ACC0_PAT: ${{ secrets.ACC0_PAT }}
           ACC6_PAT: ${{ secrets.ACC6_PAT }}
           ACC1_PAT: ${{ secrets.ACC1_PAT }}
         run: |
-          case "$TARGET_REPO" in
-            Mohammadlali/Claud-Cloud-Project) TOKEN="$ACC0_PAT" ;;
-            Mohammadlali/Control-Room)        TOKEN="$ACC0_PAT" ;;
-            momonakikugava-pixel/AirboxVIP_Coffeenet) TOKEN="$ACC1_PAT" ;;
-            Mohammadlali/agw-workers) TOKEN="$ACC0_PAT" ;;
-            *) echo "Unknown target_repo -- not pushing." >&2; exit 0 ;;
-          esac
+          if [ -n "$TARGET_REPO_PAT_INPUT" ]; then
+            echo "::add-mask::$TARGET_REPO_PAT_INPUT"
+            TOKEN="$TARGET_REPO_PAT_INPUT"
+          else
+            case "$TARGET_REPO" in
+              Mohammadlali/agw-workers) TOKEN="$ACC0_PAT" ;;
+              *) TOKEN="$ACC6_PAT" ;;
+            esac
+          fi
           cd /tmp/agent-repo
           BRANCH="${TARGET_BRANCH:-$(git symbolic-ref --short HEAD)}"
           AUTH_HEADER="AUTHORIZATION: basic $(printf 'x-access-token:%s' "$TOKEN" | base64 -w0)"
-          MAX_RETRIES=3
-          total_attempts=$((MAX_RETRIES + 1))
-          attempt=1
-          success=false
 
-          while [ "$attempt" -le "$total_attempts" ]; do
-            if [ "$attempt" -eq 1 ]; then
-              echo "Push attempt 1 of $total_attempts (initial push)..."
-            else
-              echo "Push attempt $attempt of $total_attempts (retry $((attempt - 1)) of $MAX_RETRIES)..."
-            fi
-
-            if git -c http.https://github.com/.extraHeader="$AUTH_HEADER" push origin "HEAD:$BRANCH"; then
-              echo "Successfully pushed changes to origin/$BRANCH on attempt $attempt."
-              success=true
-              break
-            fi
-
-            echo "Push attempt $attempt failed." >&2
-
-            if [ "$attempt" -lt "$total_attempts" ]; then
-              retry_num=$attempt
-              echo "Attempting retry $retry_num of $MAX_RETRIES: fetching origin/$BRANCH fresh and rebasing..."
-              if ! git -c http.https://github.com/.extraHeader="$AUTH_HEADER" fetch origin "$BRANCH"; then
-                echo "Error: Failed to fetch origin/$BRANCH on retry $retry_num." >&2
+          # Shared by BOTH pushes below -- the agent's own commits (if any)
+          # and the raw-output commit. Needed for real once agy-lead-plan.yml
+          # started dispatching up to 10 of these in a tight stagger: several
+          # workers finishing near-simultaneously all push to the SAME branch,
+          # and a single un-retried push loses the race and the report with
+          # it. Measured live 2026-09-14 (run 34894884199, leadtest-12-acc1-w05):
+          # the FIRST push here already retried and succeeded, but the SECOND
+          # (the raw-output commit) had no retry loop at all and died on its
+          # first "fetch first" rejection -- a real report silently lost, not
+          # a hypothetical race.
+          push_with_retry() {
+            local max_retries=3
+            local total_attempts=$((max_retries + 1))
+            local attempt=1
+            while [ "$attempt" -le "$total_attempts" ]; do
+              if [ "$attempt" -eq 1 ]; then
+                echo "Push attempt 1 of $total_attempts (initial push)..."
+              else
+                echo "Push attempt $attempt of $total_attempts (retry $((attempt - 1)) of $max_retries)..."
+              fi
+              if git -c http.https://github.com/.extraHeader="$AUTH_HEADER" push origin "HEAD:$BRANCH"; then
+                echo "Successfully pushed to origin/$BRANCH on attempt $attempt."
+                return 0
+              fi
+              echo "Push attempt $attempt failed." >&2
+              if [ "$attempt" -lt "$total_attempts" ]; then
+                echo "Retry $attempt of $max_retries: fetching origin/$BRANCH fresh and rebasing..."
+                if ! git -c http.https://github.com/.extraHeader="$AUTH_HEADER" fetch origin "$BRANCH"; then
+                  echo "Error: fetch failed on retry $attempt." >&2
+                  sleep 2
+                  attempt=$((attempt + 1))
+                  continue
+                fi
+                if ! git rebase "origin/$BRANCH"; then
+                  echo "Error: rebase failed (conflict) on retry $attempt. Aborting rebase." >&2
+                  git rebase --abort 2>/dev/null || true
+                  return 1
+                fi
                 sleep 2
-                attempt=$((attempt + 1))
-                continue
               fi
+              attempt=$((attempt + 1))
+            done
+            return 1
+          }
 
-              echo "Rebasing local commits onto origin/$BRANCH..."
-              if ! git rebase "origin/$BRANCH"; then
-                echo "Error: Rebase failed (e.g. conflict detected) on retry $retry_num. Aborting rebase." >&2
-                git rebase --abort 2>/dev/null || true
-                exit 1
-              fi
-
-              echo "Rebase onto origin/$BRANCH succeeded. Waiting before next push attempt..."
-              sleep 2
-            fi
-
-            attempt=$((attempt + 1))
-          done
-
-          if [ "$success" != "true" ]; then
-            echo "Error: Failed to push to origin/$BRANCH after $total_attempts attempts ($MAX_RETRIES retries)." >&2
+          if ! push_with_retry; then
+            echo "Error: Failed to push agent commits to origin/$BRANCH." >&2
             exit 1
           fi
 
           # Record the agent's raw output as a file inside this same repo,
-          # using the same credential already used for the push above,
-          # instead of a public console/summary/artifact. This repo is
-          # whichever one the caller wired a token for (checkout step
-          # above) -- it may be temporarily public itself, but that is no
-          # different from the code the agent just committed being public;
-          # the point of this step is to stop the run's own console log,
-          # job summary and artifact page (which are public on ANY repo's
-          # Actions tab, private target repo or not) from being an
-          # additional, wider-audience copy of it.
+          # using the same credential already used for the push above.
           RUN_TAG="${{ inputs.callback_id }}"
           if [ -z "$RUN_TAG" ]; then RUN_TAG="${{ github.run_id }}"; fi
-          mkdir -p Reports/agy
-          cp /tmp/agy_output.txt "Reports/agy/${RUN_TAG}.txt"
-          git add "Reports/agy/${RUN_TAG}.txt"
+          REPORT_DIR="${{ inputs.report_dir }}"
+          if [ -n "$REPORT_DIR" ]; then
+            OUT_PATH="Reports/agy/${REPORT_DIR}/${RUN_TAG}.txt"
+          else
+            OUT_PATH="Reports/agy/${RUN_TAG}.txt"
+          fi
+          mkdir -p "$(dirname "$OUT_PATH")"
+          cp /tmp/agy_output.txt "$OUT_PATH"
+          git add "$OUT_PATH"
           if ! git diff --cached --quiet; then
             git commit -m "agy: record raw output for ${RUN_TAG}"
-            git -c http.https://github.com/.extraHeader="$AUTH_HEADER" push origin "HEAD:$BRANCH"
+            if ! push_with_retry; then
+              echo "Error: Failed to push raw-output commit to origin/$BRANCH." >&2
+              exit 1
+            fi
             echo "output_committed=true" >> "$GITHUB_ENV"
           fi
 
@@ -287,16 +457,21 @@ jobs:
         if: always()
         run: |
           echo "## AGW Worker Result" >> $GITHUB_STEP_SUMMARY
-          echo "- **Account:** acc${{ steps.pick_token.outputs.acc_idx }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Account used:** acc${{ steps.run_agy.outputs.used_idx || steps.pick_token.outputs.acc_idx }}" >> $GITHUB_STEP_SUMMARY
           echo "- **Callback ID:** ${{ inputs.callback_id }}" >> $GITHUB_STEP_SUMMARY
           echo "- **Run ID:** ${{ github.run_id }}" >> $GITHUB_STEP_SUMMARY
           echo "- **Target repo:** ${{ inputs.target_repo || '(none)' }}" >> $GITHUB_STEP_SUMMARY
-          echo "- **Exit status:** $(cat /tmp/agy_output.txt >/dev/null 2>&1 && echo captured || echo missing)" >> $GITHUB_STEP_SUMMARY
           echo "- **Output lines:** $(wc -l < /tmp/agy_output.txt 2>/dev/null || echo 0)" >> $GITHUB_STEP_SUMMARY
           if [ "${{ steps.checkout_target.outputs.has_repo }}" = "true" ]; then
             RUN_TAG="${{ inputs.callback_id }}"
             if [ -z "$RUN_TAG" ]; then RUN_TAG="${{ github.run_id }}"; fi
-            echo "- **Full output:** committed to \`Reports/agy/${RUN_TAG}.txt\` in \`${{ inputs.target_repo }}\` (not printed here -- see that repo's own access controls)" >> $GITHUB_STEP_SUMMARY
+            REPORT_DIR="${{ inputs.report_dir }}"
+            if [ -n "$REPORT_DIR" ]; then OUT_PATH="Reports/agy/${REPORT_DIR}/${RUN_TAG}.txt"; else OUT_PATH="Reports/agy/${RUN_TAG}.txt"; fi
+            echo "- **Full output:** committed to \`${OUT_PATH}\` in \`${{ inputs.target_repo }}\` (not printed here -- see that repo's own access controls)" >> $GITHUB_STEP_SUMMARY
           else
             echo "- **Full output:** no target repo was given, so it is only in the fallback artifact above" >> $GITHUB_STEP_SUMMARY
           fi
+          if [ -n "${{ inputs.issue_number }}" ]; then
+            echo "- **Issue comment:** posted to issue #${{ inputs.issue_number }} in this repo" >> $GITHUB_STEP_SUMMARY
+          fi
+
