@@ -53,7 +53,7 @@ permissions:
 jobs:
   refresh-feed:
     name: Regenerate status.json and publish it to the status gist (from agw-workers)
-    runs-on: ubuntu-latest
+    runs-on: self-hosted
     timeout-minutes: 5
     env:
       ACC0_PAT: ${{ secrets.ACC0_PAT }}
