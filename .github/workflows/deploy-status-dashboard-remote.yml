@@ -32,7 +32,7 @@ permissions:
 
 jobs:
   deploy:
-    runs-on: ubuntu-latest
+    runs-on: self-hosted
     timeout-minutes: 10
     env:
       ACC0_PAT: ${{ secrets.ACC0_PAT }}
