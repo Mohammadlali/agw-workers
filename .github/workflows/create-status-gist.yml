@@ -16,7 +16,7 @@ on:
 
 jobs:
   create-gist:
-    runs-on: ubuntu-latest
+    runs-on: self-hosted
     timeout-minutes: 3
     env:
       GH_TOKEN: ${{ secrets.ACC0_PAT }}
