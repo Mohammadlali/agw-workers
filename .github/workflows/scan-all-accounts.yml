@@ -20,7 +20,15 @@ permissions:
 
 jobs:
   scan:
-    runs-on: ubuntu-latest
+    # self-hosted, not ubuntu-latest, and not by preference: GitHub-hosted
+    # runners do not work on this account right now. Measured 2026-09-17 --
+    # every ubuntu-latest job here is created with its label, dies in 3-6
+    # seconds having run zero steps, and serves no logs at all (the log
+    # download 404s), while a self-hosted job on the same commit succeeded.
+    # This repo is private, so the likeliest cause is an Actions spending
+    # limit rather than anything in this file. Revert this line once
+    # GitHub-hosted runners work again.
+    runs-on: self-hosted
     timeout-minutes: 20
     env:
       ACC0_PAT: ${{ secrets.ACC0_PAT }}
