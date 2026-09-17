@@ -34,6 +34,11 @@ on:
         required: false
         default: '5'
         type: string
+      logs_run_id:
+        description: 'Optional: dump the logs of every failed job in this ACC6 run id'
+        required: false
+        default: ''
+        type: string
 
 permissions:
   contents: read
@@ -47,6 +52,7 @@ jobs:
       SRC: mohammadlali0707-stack/agw-workers
       WFS_INPUT: ${{ inputs.workflows }}
       RUNS_INPUT: ${{ inputs.runs }}
+      LOGS_RUN_INPUT: ${{ inputs.logs_run_id }}
     steps:
       - name: Report run history
         shell: bash
@@ -119,6 +125,51 @@ jobs:
             fi
             echo "" >> "$OUT"
           done
+
+          # Knowing WHICH step failed narrows the cause; the step's own output
+          # names it. "Install AGY CLI from HF Dataset" can fail because the
+          # runner has no egress to huggingface.co, because the HF token is
+          # missing or expired, or because a tool the installer needs is not
+          # on the box -- three different fixes, indistinguishable from the
+          # step list alone.
+          if [ -n "${LOGS_RUN_INPUT:-}" ]; then
+            RID="$LOGS_RUN_INPUT"
+            echo "## Logs of failed jobs in run \`$RID\`" >> "$OUT"
+            echo "" >> "$OUT"
+
+            JCODE=$(curl -sS -o /tmp/lj.json -w '%{http_code}' --max-time 30 \
+              -H "Authorization: Bearer $ACC6_PAT" \
+              -H "Accept: application/vnd.github+json" \
+              "$API/repos/$SRC/actions/runs/$RID/jobs?per_page=20" || echo "000")
+
+            if [ "$JCODE" != "200" ]; then
+              echo "Job list returned HTTP $JCODE." >> "$OUT"
+            else
+              FAILED_IDS=$(jq -r '.jobs[] | select(.conclusion == "failure") | .id' /tmp/lj.json)
+              if [ -z "$FAILED_IDS" ]; then
+                echo "No job in this run concluded \`failure\`." >> "$OUT"
+              fi
+              for JID in $FAILED_IDS; do
+                JNAME=$(jq -r --arg i "$JID" '.jobs[] | select((.id|tostring) == $i) | .name' /tmp/lj.json)
+                echo "### job \`$JNAME\` (id $JID) -- last 80 lines" >> "$OUT"
+                echo "" >> "$OUT"
+                # curl drops the Authorization header when the API redirects to
+                # the log blob on another host, so the PAT is not sent there.
+                LCODE=$(curl -sSL -o /tmp/log.txt -w '%{http_code}' --max-time 60 \
+                  -H "Authorization: Bearer $ACC6_PAT" \
+                  -H "Accept: application/vnd.github+json" \
+                  "$API/repos/$SRC/actions/jobs/$JID/logs" || echo "000")
+                echo '```' >> "$OUT"
+                if [ "$LCODE" != "200" ]; then
+                  echo "(log download returned HTTP $LCODE)" >> "$OUT"
+                else
+                  tail -80 /tmp/log.txt >> "$OUT"
+                fi
+                echo '```' >> "$OUT"
+                echo "" >> "$OUT"
+              done
+            fi
+          fi
 
           cat "$OUT" >> "$GITHUB_STEP_SUMMARY"
           echo "--- report ---"
