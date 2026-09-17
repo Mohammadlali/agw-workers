@@ -117,10 +117,10 @@ jobs:
             # --exclude this file: it carries both paths as grep patterns, so
             # without it the scan reports itself as a stale reference on every
             # account it has been deployed to.
-            STALE=$(grep -rl -e "Mohammadlali/status-dashboard" \
+            STALE=$( (grep -rl -e "Mohammadlali/status-dashboard" \
                              -e "Mohammadlali/Claud-Cloud-Project" \
                              "$W" --exclude-dir=.git \
-                             --exclude=scan-all-accounts.yml 2>/dev/null | wc -l)
+                             --exclude=scan-all-accounts.yml 2>/dev/null || true) | wc -l)
 
             if [ -f "$W/docs/notion-n8n-integration.md" ]; then DOCS="yes"; else DOCS="no"; fi
 
