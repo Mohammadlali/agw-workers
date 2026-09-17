@@ -22,7 +22,7 @@ on:
 
 jobs:
   runs-on-policy:
-    runs-on: ubuntu-latest
+    runs-on: self-hosted
     steps:
       - uses: actions/checkout@v4
 
@@ -55,7 +55,7 @@ jobs:
               else
                 echo "  [FAIL] $BASENAME -- self-hosted NOT ALLOWED"
                 echo "     This workflow does not need a self-hosted runner."
-                echo "     Change 'runs-on: self-hosted' to 'runs-on: ubuntu-latest'"
+                echo "     Change 'runs-on: self-hosted' to 'runs-on: self-hosted'"
                 echo "     Reason: Only agw-worker.yml and gate-runner-deps.yml may"
                 echo "             use self-hosted. All other workflows must use"
                 echo "             GitHub-hosted runners to avoid zombie runner issues."
