@@ -1,13 +1,19 @@
 name: Gate 4 -- runs-on Policy Enforcer
 
-# Rule: self-hosted runners are ONLY allowed in:
-#   - agw-worker.yml        (actual AGY binary execution)
-#   - gate-runner-deps.yml  (specifically checks runner-installed tools)
-# All other workflows MUST use ubuntu-latest (or another GitHub-hosted runner).
+# Rule: a workflow may use a self-hosted runner only if its filename is in
+# ALLOWED_SELFHOSTED below. Anything else must use a GitHub-hosted runner.
 #
 # Root cause this prevents:
 #   Using self-hosted in dispatch/bot/gate workflows causes zombie runner
 #   accumulation, 409 conflicts, and silent trigger failures.
+#
+# The list was two entries (agw-worker.yml for the AGY binary,
+# gate-runner-deps.yml for the runner's own tools) until 2026-09-17, when
+# GitHub-hosted runners stopped working on this account and every workflow
+# here had to move to self-hosted to run at all. The list now names them, so
+# the gate still catches a NEW workflow picking up self-hosted by accident --
+# which is the part that was always worth enforcing. See the note at the list
+# itself, and shrink it back once GitHub-hosted runners work again.
 
 on:
   push:
@@ -29,11 +35,46 @@ jobs:
       - name: Enforce runs-on policy
         run: |
           echo "=== runs-on Policy Gate ==="
-          echo "Rule: self-hosted only allowed in: agw-worker.yml, gate-runner-deps.yml"
+          echo "Rule: self-hosted is allowed only for the files listed below."
+          echo "A workflow not on the list must use a GitHub-hosted runner."
           echo ""
 
           FAILED=0
-          ALLOWED_SELFHOSTED="agw-worker.yml gate-runner-deps.yml"
+          # This list is a ratchet, not a blanket approval: every entry is a
+          # workflow that uses self-hosted TODAY, so a NEW one still has to be
+          # added here deliberately. That is the check worth keeping.
+          #
+          # It grew from two entries to this on 2026-09-17, because
+          # GitHub-hosted runners stopped working on this account: an
+          # ubuntu-latest job is created with its label, runs zero steps, dies
+          # in 3-6 seconds and serves no logs, while self-hosted jobs succeed.
+          # The repo is private, so an Actions spending limit is the likeliest
+          # cause. Until that is resolved, ubuntu-latest is not an option the
+          # gate can honestly demand -- including for this gate itself, which
+          # could not run at all until it moved to self-hosted.
+          #
+          # When GitHub-hosted runners work again, shrink this list back
+          # rather than leaving it as the permanent state.
+          ALLOWED_SELFHOSTED="
+            agw-worker.yml
+            gate-runner-deps.yml
+            gate-runs-on-policy.yml
+            gate-yaml-lint.yml
+            agw-claude.yml
+            agy-issue-bot.yml
+            agy-lead-plan.yml
+            create-status-gist.yml
+            deploy-status-dashboard-remote.yml
+            deploy-status-feed-remote.yml
+            media-request-bot.yml
+            refresh-vercel-secret.yml
+            relay-deploy-acc6-migration.yml
+            scan-all-accounts.yml
+            tbs-pubspec.yml
+            tbs-worker.yml
+            test-agy-chat-live.yml
+            test-status-api-live.yml
+          "
 
           for f in .github/workflows/*.yml .github/workflows/*.yaml; do
             [ -f "$f" ] || continue
@@ -53,12 +94,12 @@ jobs:
               if [ "$ALLOWED" = "true" ]; then
                 echo "  [OK] $BASENAME -- self-hosted ALLOWED (in whitelist)"
               else
-                echo "  [FAIL] $BASENAME -- self-hosted NOT ALLOWED"
-                echo "     This workflow does not need a self-hosted runner."
-                echo "     Change 'runs-on: self-hosted' to 'runs-on: self-hosted'"
-                echo "     Reason: Only agw-worker.yml and gate-runner-deps.yml may"
-                echo "             use self-hosted. All other workflows must use"
-                echo "             GitHub-hosted runners to avoid zombie runner issues."
+                echo "  [FAIL] $BASENAME -- self-hosted, and not on the allowed list"
+                echo "     Either switch it to a GitHub-hosted runner, or, if it"
+                echo "     genuinely needs the self-hosted one, add its filename to"
+                echo "     ALLOWED_SELFHOSTED in this file and say why in the commit."
+                echo "     The list is deliberate: it exists so a new workflow cannot"
+                echo "     pick up self-hosted by accident and accumulate zombie runners."
                 FAILED=1
               fi
             else
