@@ -73,6 +73,7 @@ jobs:
             tbs-pubspec.yml
             tbs-worker.yml
             test-agy-chat-live.yml
+            gate-webhook-health.yml
             test-status-api-live.yml
           "
 
