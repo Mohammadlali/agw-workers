@@ -1,5 +1,21 @@
 name: Gate 2 -- Webhook Health Checker
 
+# KNOWN FLAW, not yet fixable here: this gate runs on self-hosted, and the
+# self-hosted runners are spawned by the very n8n endpoint it checks. A health
+# check must not depend on the thing it is checking -- when n8n went down on
+# 2026-09-17 its webhook routes stopped resolving, so no runner was spawned,
+# so this gate never ran, and the outage went unreported for about six hours.
+# Its second step POSTs to that endpoint and fails on 404: it would have caught
+# the outage within the hour if it had been able to run at all.
+#
+# The fix is to move this one job to a GitHub-hosted runner. That is not done
+# yet only because GitHub-hosted runners are themselves unavailable on this
+# account (jobs created, zero steps, no logs, gone in 3-6 seconds, consistent
+# with an Actions spending limit) -- moving it today would trade a gate that
+# cannot run for a gate that cannot run. Move it the moment that is resolved,
+# and drop gate-webhook-health.yml from ALLOWED_SELFHOSTED in
+# gate-runs-on-policy.yml at the same time.
+
 on:
   schedule:
     # Every hour
@@ -43,34 +59,34 @@ jobs:
 
               # Check 1: No test URLs in production
               if '/webhook-test/' in url:
-                  print(f"  âŒ FAIL: Uses webhook-test URL (not production!)")
+                  print(f"  [FAIL] Uses webhook-test URL (not production!)")
                   failed = True
               else:
-                  print(f"  âœ… URL is production")
+                  print(f"  [OK] URL is production")
 
               # Check 2: Must point to correct n8n URL
               if url != expected_url and 'n8n' in url:
-                  print(f"  âŒ FAIL: URL mismatch. Expected: {expected_url}")
+                  print(f"  [FAIL] URL mismatch. Expected: {expected_url}")
                   failed = True
 
               # Check 3: Required events must be present
               missing = [e for e in required_events if e not in events]
               if missing:
-                  print(f"  âŒ FAIL: Missing events: {missing}")
+                  print(f"  [FAIL] Missing events: {missing}")
                   failed = True
               else:
-                  print(f"  âœ… All required events present: {events}")
+                  print(f"  [OK] All required events present: {events}")
 
               # Check 4: Must be active
               if not active:
-                  print(f"  âŒ FAIL: Webhook is inactive!")
+                  print(f"  [FAIL] Webhook is inactive!")
                   failed = True
 
           if failed:
-              print("\nâŒ WEBHOOK HEALTH CHECK FAILED")
+              print("\n[FAIL] WEBHOOK HEALTH CHECK FAILED")
               sys.exit(1)
           else:
-              print("\nâœ… All webhooks are healthy")
+              print("\n[OK] All webhooks are healthy")
           EOF
 
       - name: Verify webhook endpoint is reachable
@@ -85,10 +101,10 @@ jobs:
           # n8n returns 200 (processed) or 400 (bad payload but reachable) = OK
           # 000 = unreachable, 404 = wrong path, 503 = down
           if [ "$STATUS" = "000" ] || [ "$STATUS" = "404" ] || [ "$STATUS" = "503" ]; then
-            echo "âŒ n8n endpoint unreachable or wrong (HTTP $STATUS)"
+            echo "[FAIL] n8n endpoint unreachable or wrong (HTTP $STATUS)"
             exit 1
           else
-            echo "âœ… n8n endpoint reachable (HTTP $STATUS)"
+            echo "[OK] n8n endpoint reachable (HTTP $STATUS)"
           fi
 
       - name: Post alert if webhook health fails
@@ -96,7 +112,7 @@ jobs:
         run: |
           gh issue create \
             --repo "$GITHUB_REPOSITORY" \
-            --title "ðŸš¨ Webhook Health Gate Failed: $(date -u '+%Y-%m-%d %H:%M UTC')" \
+            --title "ALERT: Webhook Health Gate Failed: $(date -u '+%Y-%m-%d %H:%M UTC')" \
             --body "## Webhook Health Check Failed
 
           The automated webhook health gate detected a problem.
