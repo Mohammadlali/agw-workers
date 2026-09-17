@@ -1,0 +1,163 @@
+name: Scan ACC0..ACC8 agw-workers repos
+
+# Read-only fleet scan. Nothing is cloned for writing, nothing is pushed.
+#
+# Exists because a cloud session's own GitHub access reaches one owner at a
+# time (add_repo refuses cross-owner adds), so the nine accounts can only be
+# compared from inside Actions, where each ACC{N}_PAT is available.
+#
+# Reports per account: whether its PAT is present here, repo visibility, how
+# many files still carry the pre-2026-09-17 Mohammadlali paths, whether the
+# integration doc landed, and which workflow files differ from THIS repo's
+# checkout (the baseline). An account with no PAT, or one the PAT cannot
+# reach, is reported as such and never fails the run.
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  scan:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      ACC0_PAT: ${{ secrets.ACC0_PAT }}
+      ACC1_PAT: ${{ secrets.ACC1_PAT }}
+      ACC2_PAT: ${{ secrets.ACC2_PAT }}
+      ACC3_PAT: ${{ secrets.ACC3_PAT }}
+      ACC4_PAT: ${{ secrets.ACC4_PAT }}
+      ACC5_PAT: ${{ secrets.ACC5_PAT }}
+      ACC6_PAT: ${{ secrets.ACC6_PAT }}
+      ACC7_PAT: ${{ secrets.ACC7_PAT }}
+      ACC8_PAT: ${{ secrets.ACC8_PAT }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Scan each account
+        shell: bash
+        run: |
+          set -uo pipefail
+
+          BASE="$GITHUB_WORKSPACE"
+          ROWS=/tmp/scan-rows.md
+          DETAIL=/tmp/scan-detail.md
+          : > "$ROWS"
+          : > "$DETAIL"
+
+          for N in 0 1 2 3 4 5 6 7 8; do
+            # Same owner<->index table as agw-worker.yml's restore_token.
+            # ACC9 (stranger77777777) is retired and deliberately absent.
+            case "$N" in
+              0) OWNER="Mohammadlali"           ; TOKEN="$ACC0_PAT" ;;
+              1) OWNER="momonakikugava-pixel"   ; TOKEN="$ACC1_PAT" ;;
+              2) OWNER="lali94m-max"            ; TOKEN="$ACC2_PAT" ;;
+              3) OWNER="ngocgminh5-debug"       ; TOKEN="$ACC3_PAT" ;;
+              4) OWNER="hmmletssee7-design"     ; TOKEN="$ACC4_PAT" ;;
+              5) OWNER="kidding602"             ; TOKEN="$ACC5_PAT" ;;
+              6) OWNER="mohammadlali0707-stack" ; TOKEN="$ACC6_PAT" ;;
+              7) OWNER="mohammad97okk"          ; TOKEN="$ACC7_PAT" ;;
+              8) OWNER="moradzahra85-png"       ; TOKEN="$ACC8_PAT" ;;
+            esac
+
+            echo "=== ACC${N} (${OWNER}) ==="
+
+            if [ -z "$TOKEN" ]; then
+              echo "  ACC${N}_PAT is not set on this repo"
+              echo "| ACC$N | $OWNER | NOT SET | - | - | - | - | - |" >> "$ROWS"
+              continue
+            fi
+            echo "::add-mask::$TOKEN"
+
+            CODE=$(curl -sS -o /tmp/repo.json -w '%{http_code}' \
+              -H "Authorization: Bearer $TOKEN" \
+              -H "Accept: application/vnd.github+json" \
+              "https://api.github.com/repos/${OWNER}/agw-workers")
+            if [ "$CODE" != "200" ]; then
+              echo "  repo API returned $CODE"
+              echo "| ACC$N | $OWNER | set | API $CODE | - | - | - | - |" >> "$ROWS"
+              continue
+            fi
+            VIS=$(jq -r '.visibility // "?"' /tmp/repo.json)
+
+            # Secret NAMES only -- the API never returns values. 403 here just
+            # means this PAT has no admin scope on that repo.
+            SCODE=$(curl -sS -o /tmp/sec.json -w '%{http_code}' \
+              -H "Authorization: Bearer $TOKEN" \
+              -H "Accept: application/vnd.github+json" \
+              "https://api.github.com/repos/${OWNER}/agw-workers/actions/secrets?per_page=100")
+            if [ "$SCODE" = "200" ]; then
+              SECRETS=$(jq -r '[.secrets[].name | select(startswith("ACC"))] | join(" ")' /tmp/sec.json)
+              [ -z "$SECRETS" ] && SECRETS="(none)"
+            else
+              SECRETS="n/a ($SCODE)"
+            fi
+
+            AUTH_HEADER="AUTHORIZATION: basic $(printf 'x-access-token:%s' "$TOKEN" | base64 -w0)"
+            echo "::add-mask::$AUTH_HEADER"
+
+            W="/tmp/scan-acc${N}"
+            rm -rf "$W"
+            if ! git -c http.https://github.com/.extraHeader="$AUTH_HEADER" \
+                 clone --depth 1 -q "https://github.com/${OWNER}/agw-workers.git" "$W"; then
+              echo "  clone failed"
+              echo "| ACC$N | $OWNER | set | $VIS | clone failed | - | - | $SECRETS |" >> "$ROWS"
+              continue
+            fi
+
+            STALE=$(grep -rl -e "Mohammadlali/status-dashboard" \
+                             -e "Mohammadlali/Claud-Cloud-Project" \
+                             "$W" --exclude-dir=.git 2>/dev/null | wc -l)
+
+            if [ -f "$W/docs/notion-n8n-integration.md" ]; then DOCS="yes"; else DOCS="no"; fi
+
+            # Workflow files that differ from this repo's checkout, both ways.
+            # ACC0-only tooling is excluded: it is deliberately not deployed to
+            # the other accounts, so counting it would put two permanent false
+            # differences on every row and bury the real ones.
+            DIFFC=0
+            for F in "$BASE"/.github/workflows/*.yml; do
+              B=$(basename "$F")
+              case "$B" in
+                relay-deploy-acc6-migration.yml|scan-all-accounts.yml) continue ;;
+              esac
+              if [ ! -f "$W/.github/workflows/$B" ]; then
+                DIFFC=$((DIFFC + 1))
+                echo "- ACC$N $OWNER -- missing there: $B" >> "$DETAIL"
+              elif ! cmp -s "$F" "$W/.github/workflows/$B"; then
+                DIFFC=$((DIFFC + 1))
+                echo "- ACC$N $OWNER -- content differs: $B" >> "$DETAIL"
+              fi
+            done
+            for F in "$W"/.github/workflows/*.yml; do
+              [ -f "$F" ] || continue
+              B=$(basename "$F")
+              if [ ! -f "$BASE/.github/workflows/$B" ]; then
+                DIFFC=$((DIFFC + 1))
+                echo "- ACC$N $OWNER -- extra there: $B" >> "$DETAIL"
+              fi
+            done
+
+            echo "  visibility=$VIS stale=$STALE docs=$DOCS wf_differ=$DIFFC"
+            echo "| ACC$N | $OWNER | set | $VIS | $STALE | $DOCS | $DIFFC | $SECRETS |" >> "$ROWS"
+          done
+
+          {
+            echo "## Fleet scan"
+            echo ""
+            echo "Baseline for the workflow diff is this repo's checkout."
+            echo "Stale = files still carrying a pre-move Mohammadlali project path."
+            echo ""
+            echo "| acc | owner | PAT here | visibility | stale | docs md | wf differ | ACC secrets there |"
+            echo "|---|---|---|---|---|---|---|---|"
+            cat "$ROWS"
+            echo ""
+            if [ -s "$DETAIL" ]; then
+              echo "### Workflow differences"
+              echo ""
+              cat "$DETAIL"
+            else
+              echo "No workflow differences found against the baseline."
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
