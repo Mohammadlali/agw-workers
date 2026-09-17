@@ -1,0 +1,153 @@
+name: Relay -- deploy the ACC6 migration to ACC1..ACC8
+
+# Copies the files the 2026-09-17 ACC6 move touched from this repo (ACC0's
+# copy) to the other eight accounts' agw-workers repos, one runner boot for
+# all eight. Without it, eight copies keep cloning Mohammadlali paths that no
+# longer resolve for them.
+#
+# Skips an account cleanly -- does not fail the job -- when its PAT is absent
+# here, its clone fails, or its content already matches. Only a push that was
+# attempted and refused fails the run.
+#
+# tbs-worker.yml is in the list but the hub repo
+# (mohammadlali0707-stack/Claud-Cloud-Project) is its authoritative copy, so
+# the next hub sync overwrites what this ships. Fix it in the hub too; once
+# both agree, this file is skipped here as already identical.
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  relay:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      ACC1_PAT: ${{ secrets.ACC1_PAT }}
+      ACC2_PAT: ${{ secrets.ACC2_PAT }}
+      ACC3_PAT: ${{ secrets.ACC3_PAT }}
+      ACC4_PAT: ${{ secrets.ACC4_PAT }}
+      ACC5_PAT: ${{ secrets.ACC5_PAT }}
+      ACC6_PAT: ${{ secrets.ACC6_PAT }}
+      ACC7_PAT: ${{ secrets.ACC7_PAT }}
+      ACC8_PAT: ${{ secrets.ACC8_PAT }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Deploy to each account
+        shell: bash
+        run: |
+          set -uo pipefail
+
+          FILES="
+          .github/workflows/agy-issue-bot.yml
+          .github/workflows/deploy-status-dashboard-remote.yml
+          .github/workflows/deploy-status-feed-remote.yml
+          .github/workflows/tbs-worker.yml
+          .github/workflows/test-agy-chat-live.yml
+          README.md
+          docs/notion-n8n-integration.md
+          "
+
+          SRC="$GITHUB_WORKSPACE"
+          PUSHED=0
+          SKIPPED=0
+          FAILED=0
+
+          for N in 1 2 3 4 5 6 7 8; do
+            # Same owner<->index table as agw-worker.yml's restore_token.
+            case "$N" in
+              1) OWNER="momonakikugava-pixel"   ; TOKEN="$ACC1_PAT" ;;
+              2) OWNER="lali94m-max"            ; TOKEN="$ACC2_PAT" ;;
+              3) OWNER="ngocgminh5-debug"       ; TOKEN="$ACC3_PAT" ;;
+              4) OWNER="hmmletssee7-design"     ; TOKEN="$ACC4_PAT" ;;
+              5) OWNER="kidding602"             ; TOKEN="$ACC5_PAT" ;;
+              6) OWNER="mohammadlali0707-stack" ; TOKEN="$ACC6_PAT" ;;
+              7) OWNER="mohammad97okk"          ; TOKEN="$ACC7_PAT" ;;
+              8) OWNER="moradzahra85-png"       ; TOKEN="$ACC8_PAT" ;;
+            esac
+
+            echo "=== ACC${N} (${OWNER}) ==="
+
+            if [ -z "$TOKEN" ]; then
+              echo "::warning::ACC${N}_PAT is not set on this repo -- skipping ${OWNER}"
+              SKIPPED=$((SKIPPED + 1))
+              continue
+            fi
+
+            echo "::add-mask::$TOKEN"
+            AUTH_HEADER="AUTHORIZATION: basic $(printf 'x-access-token:%s' "$TOKEN" | base64 -w0)"
+            echo "::add-mask::$AUTH_HEADER"
+
+            WORK="/tmp/relay-acc${N}"
+            rm -rf "$WORK"
+
+            if ! git -c http.https://github.com/.extraHeader="$AUTH_HEADER" \
+                 clone --depth 1 "https://github.com/${OWNER}/agw-workers.git" "$WORK"; then
+              echo "::warning::clone of ${OWNER}/agw-workers failed -- skipping"
+              SKIPPED=$((SKIPPED + 1))
+              continue
+            fi
+
+            CHANGED=""
+            for F in $FILES; do
+              if [ -f "$WORK/$F" ] && cmp -s "$SRC/$F" "$WORK/$F"; then
+                continue
+              fi
+              mkdir -p "$WORK/$(dirname "$F")"
+              cp "$SRC/$F" "$WORK/$F"
+              CHANGED="$CHANGED $F"
+            done
+
+            if [ -z "$CHANGED" ]; then
+              echo "  already identical -- nothing to push"
+              SKIPPED=$((SKIPPED + 1))
+              continue
+            fi
+
+            echo "  files that differ:$CHANGED"
+            git -C "$WORK" add -A
+            git -C "$WORK" config user.name "agw-relay"
+            git -C "$WORK" config user.email "agw-relay@users.noreply.github.com"
+            git -C "$WORK" commit -q -F - <<'MSGEOF'
+          Relay: point project-repo references at ACC6
+
+          Deployed from ACC0's agw-workers by relay-deploy-acc6-migration.yml.
+          Every project repo is owned by mohammadlali0707-stack as of
+          2026-09-17, so the workflows that clone or check one out use that
+          owner and authenticate with ACC6_PAT.
+
+          Per-account agw-workers repos are unaffected, and the status Gist
+          keeps ACC0_PAT because a Gist does not transfer with a repo.
+          MSGEOF
+
+            BRANCH=$(git -C "$WORK" symbolic-ref --short HEAD)
+
+            PUSH_OK=0
+            for ATTEMPT in 1 2 3; do
+              if git -C "$WORK" -c http.https://github.com/.extraHeader="$AUTH_HEADER" \
+                   push origin "$BRANCH"; then
+                PUSH_OK=1
+                break
+              fi
+              echo "::warning::push to ${OWNER} failed (attempt ${ATTEMPT}/3)"
+              [ "$ATTEMPT" -lt 3 ] && sleep $((ATTEMPT * 4))
+            done
+
+            if [ "$PUSH_OK" -eq 1 ]; then
+              echo "  pushed to ${OWNER}/agw-workers@${BRANCH}"
+              PUSHED=$((PUSHED + 1))
+            else
+              echo "::error::push to ${OWNER}/agw-workers failed after 3 attempts"
+              FAILED=$((FAILED + 1))
+            fi
+          done
+
+          echo "pushed=$PUSHED skipped=$SKIPPED failed=$FAILED" >> "$GITHUB_STEP_SUMMARY"
+
+          if [ "$FAILED" -gt 0 ]; then
+            echo "::error::${FAILED} account(s) failed to receive the deploy"
+            exit 1
+          fi
