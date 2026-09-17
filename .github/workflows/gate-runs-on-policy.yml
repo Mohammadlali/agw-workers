@@ -73,6 +73,7 @@ jobs:
             verify-fleet-facts.yml
             read-acc6-orchestration.yml
             read-acc6-issue.yml
+            read-acc6-runs.yml
             tbs-pubspec.yml
             tbs-worker.yml
             test-agy-chat-live.yml

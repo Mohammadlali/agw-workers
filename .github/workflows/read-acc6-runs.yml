@@ -1,0 +1,125 @@
+name: Read ACC6 workflow run history (read-only)
+
+# Issue #25 on ACC6 proved agy-plan-bot FIRES: it posted "Project Manager: در
+# حال آماده‌سازی پروپوزال..." two minutes after the issue was created. What it
+# did not prove is that the chain FINISHES -- ten minutes later that ack was
+# still the only comment on the issue, and no proposal had arrived.
+#
+# An ack is not an output. Three things could produce that shape:
+#
+#   1. agy-plan-bot fired, acked, then failed at a later step (most likely
+#      where it calls the model).
+#   2. The job is still sitting in ACC6's self-hosted queue, the way three
+#      jobs queued at once and drained serially on this account today.
+#   3. The ack and the proposal live in different jobs or workflows, and the
+#      second was never dispatched.
+#
+# Comments on the issue cannot tell these apart -- all three look identical
+# from outside, which is why the first two reads of this said "healthy". The
+# run history can: it shows the conclusion of every run, and, for the newest
+# one, the conclusion of every STEP, which names the line that failed.
+#
+# Read-only: GETs against the Actions API.
+
+on:
+  workflow_dispatch:
+    inputs:
+      workflows:
+        description: 'Space-separated workflow filenames on ACC6 to report on'
+        required: false
+        default: 'agy-plan-bot.yml agy-plan-dispatch.yml agy-lead-plan.yml'
+        type: string
+      runs:
+        description: 'How many recent runs to list per workflow'
+        required: false
+        default: '5'
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  read:
+    runs-on: self-hosted
+    timeout-minutes: 10
+    env:
+      ACC6_PAT: ${{ secrets.ACC6_PAT }}
+      SRC: mohammadlali0707-stack/agw-workers
+      WFS_INPUT: ${{ inputs.workflows }}
+      RUNS_INPUT: ${{ inputs.runs }}
+    steps:
+      - name: Report run history
+        shell: bash
+        run: |
+          set -uo pipefail
+          if [ -z "${ACC6_PAT:-}" ]; then echo "::error::secrets.ACC6_PAT is not set"; exit 1; fi
+          echo "::add-mask::$ACC6_PAT"
+
+          WFS="${WFS_INPUT:-}"
+          [ -z "$WFS" ] && WFS="agy-plan-bot.yml agy-plan-dispatch.yml agy-lead-plan.yml"
+          N="${RUNS_INPUT:-5}"
+          case "$N" in ''|*[!0-9]*) N=5 ;; esac
+
+          API=https://api.github.com
+          OUT=/tmp/out.md
+          : > "$OUT"
+          echo "Source: \`$SRC\` -- newest $N runs per workflow." >> "$OUT"
+          echo "" >> "$OUT"
+
+          for WF in $WFS; do
+            echo "## \`$WF\`" >> "$OUT"
+            echo "" >> "$OUT"
+
+            CODE=$(curl -sS -o /tmp/r.json -w '%{http_code}' --max-time 30 \
+              -H "Authorization: Bearer $ACC6_PAT" \
+              -H "Accept: application/vnd.github+json" \
+              "$API/repos/$SRC/actions/workflows/$WF/runs?per_page=$N" || echo "000")
+
+            if [ "$CODE" != "200" ]; then
+              echo "No run history (HTTP $CODE) -- the workflow may not exist on ACC6." >> "$OUT"
+              echo "" >> "$OUT"
+              continue
+            fi
+
+            TOTAL=$(jq -r '.total_count // 0' /tmp/r.json)
+            if [ "$TOTAL" = "0" ]; then
+              # A workflow that exists but has never run is itself the answer
+              # for case 3: nothing ever dispatched it.
+              echo "**Never run.** The workflow exists but has no runs at all." >> "$OUT"
+              echo "" >> "$OUT"
+              continue
+            fi
+
+            echo "$TOTAL run(s) total. Newest first:" >> "$OUT"
+            echo "" >> "$OUT"
+            echo "| created | event | status | conclusion | run |" >> "$OUT"
+            echo "|---|---|---|---|---|" >> "$OUT"
+            jq -r '.workflow_runs[] | "| \(.created_at) | \(.event) | \(.status) | **\(.conclusion // "-- still running --")** | [\(.id)](\(.html_url)) |"' \
+              /tmp/r.json >> "$OUT"
+            echo "" >> "$OUT"
+
+            RID=$(jq -r '.workflow_runs[0].id // ""' /tmp/r.json)
+            [ -z "$RID" ] && continue
+
+            JCODE=$(curl -sS -o /tmp/j.json -w '%{http_code}' --max-time 30 \
+              -H "Authorization: Bearer $ACC6_PAT" \
+              -H "Accept: application/vnd.github+json" \
+              "$API/repos/$SRC/actions/runs/$RID/jobs?per_page=20" || echo "000")
+
+            echo "**Steps of the newest run ($RID)** -- this names the line that failed:" >> "$OUT"
+            echo "" >> "$OUT"
+            if [ "$JCODE" != "200" ]; then
+              echo "Job list returned HTTP $JCODE." >> "$OUT"
+            else
+              echo '```' >> "$OUT"
+              jq -r '.jobs[] | "job: \(.name)  [\(.status)/\(.conclusion // "-")]  runner=\(.runner_name // "none -- never picked up")",
+                       (.steps[]? | "     \(.number). \(.name)  ->  \(.status)/\(.conclusion // "-")")' \
+                /tmp/j.json >> "$OUT"
+              echo '```' >> "$OUT"
+            fi
+            echo "" >> "$OUT"
+          done
+
+          cat "$OUT" >> "$GITHUB_STEP_SUMMARY"
+          echo "--- report ---"
+          cat "$OUT"
