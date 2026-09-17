@@ -1,0 +1,102 @@
+name: Read ACC6's orchestration workflows (read-only)
+
+# ACC6 carries planning workflows that this account does not have --
+# agy-plan-bot, agy-plan-dispatch, agy-final-report -- and its agy-issue-bot
+# differs from ours. Together they are what would turn a management-level
+# instruction ("continue the CCP work") into a decomposed plan dispatched
+# across the @agy fleet.
+#
+# The question this answers is concrete: what has to be true of a task created
+# in Notion for that chain to pick it up? agy-lead-plan.yml takes a
+# package_goal and breaks it across ten subordinates, which is exactly the
+# behaviour wanted, but it is workflow_dispatch only -- something has to call
+# it, and that something lives here.
+#
+# There is also a suspected mismatch worth settling. Our agy-issue-bot fires
+# only when title+body ENDS with "@agy", while the issue n8n creates from a
+# Notion page ends with its <!-- notion-page-id: ... --> marker. If ACC6's
+# copy has the same test, a Notion task creates an issue and then nothing
+# happens.
+#
+# Prints each file's trigger block and the lines that decide whether it fires,
+# rather than the whole file, so the answer is readable.
+#
+# Read-only: every call is a GET against the Contents API.
+
+on:
+  workflow_dispatch:
+    inputs:
+      files:
+        description: 'Space-separated workflow filenames to read from ACC6'
+        required: false
+        default: 'agy-plan-bot.yml agy-plan-dispatch.yml agy-final-report.yml agy-issue-bot.yml'
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  read:
+    runs-on: self-hosted
+    timeout-minutes: 10
+    env:
+      ACC6_PAT: ${{ secrets.ACC6_PAT }}
+      FILES_INPUT: ${{ inputs.files }}
+      SRC: mohammadlali0707-stack/agw-workers
+    steps:
+      - name: Fetch and summarise
+        shell: bash
+        run: |
+          set -uo pipefail
+          if [ -z "${ACC6_PAT:-}" ]; then echo "::error::secrets.ACC6_PAT is not set"; exit 1; fi
+          echo "::add-mask::$ACC6_PAT"
+
+          FILES="${FILES_INPUT:-}"
+          if [ -z "$FILES" ]; then
+            FILES="agy-plan-bot.yml agy-plan-dispatch.yml agy-final-report.yml agy-issue-bot.yml"
+          fi
+
+          OUT=/tmp/out.md
+          : > "$OUT"
+          echo "Source: \`$SRC\`" >> "$OUT"
+          echo "" >> "$OUT"
+
+          for F in $FILES; do
+            echo "## \`$F\`" >> "$OUT"
+            echo "" >> "$OUT"
+
+            CODE=$(curl -sS -o /tmp/f.json -w '%{http_code}' --max-time 30 \
+              -H "Authorization: Bearer $ACC6_PAT" \
+              -H "Accept: application/vnd.github+json" \
+              "https://api.github.com/repos/$SRC/contents/.github/workflows/$F" || echo "000")
+
+            if [ "$CODE" != "200" ]; then
+              echo "Not present on ACC6 (HTTP $CODE)." >> "$OUT"
+              echo "" >> "$OUT"
+              continue
+            fi
+
+            jq -r '.content // ""' /tmp/f.json | tr -d '\n' | base64 -d > /tmp/f.yml 2>/dev/null || : > /tmp/f.yml
+            LINES=$(wc -l < /tmp/f.yml)
+            echo "$LINES lines." >> "$OUT"
+            echo "" >> "$OUT"
+
+            echo "**Trigger block**" >> "$OUT"
+            echo "" >> "$OUT"
+            echo '```yaml' >> "$OUT"
+            awk '/^on:/{f=1;print;next} f&&/^[^[:space:]]/{exit} f{print}' /tmp/f.yml >> "$OUT" || true
+            echo '```' >> "$OUT"
+            echo "" >> "$OUT"
+
+            echo "**Lines that decide whether it fires**" >> "$OUT"
+            echo "" >> "$OUT"
+            echo '```' >> "$OUT"
+            grep -nE '@agy|notion|label|author_association|user\.login|^\s*if:|contains\(|startsWith\(|endsWith\(|package_goal|workflow_dispatch|repository_dispatch' \
+              /tmp/f.yml | head -60 >> "$OUT" || echo "(no matching lines)" >> "$OUT"
+            echo '```' >> "$OUT"
+            echo "" >> "$OUT"
+          done
+
+          cat "$OUT" >> "$GITHUB_STEP_SUMMARY"
+          echo "--- report ---"
+          cat "$OUT"
