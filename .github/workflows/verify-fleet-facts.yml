@@ -169,6 +169,46 @@ jobs:
             done
           done
 
+          # The owner says claude/gateway-auth-fix-nr7k0b is CCP's real working
+          # branch, not main. main was created earlier today from that branch's
+          # SHA, so if work continued on the branch afterwards, main is a frozen
+          # snapshot and any account pointing at it checks out stale hub code.
+          # This measures the gap rather than assuming either way.
+          echo "## 4. main vs the auth-fix branch" >> "$OUT"
+          echo "" >> "$OUT"
+          echo "| branch | head SHA | last commit |" >> "$OUT"
+          echo "|---|---|---|" >> "$OUT"
+          for B in main claude/gateway-auth-fix-nr7k0b; do
+            HCODE=$(get "$ACC6_PAT" "repos/$HUB/branches/$B" /tmp/br.json)
+            if [ "$HCODE" = "200" ]; then
+              SHA=$(jq -r '.commit.sha // "?" | .[0:8]' /tmp/br.json)
+              WHEN=$(jq -r '.commit.commit.committer.date // "?"' /tmp/br.json)
+              echo "| \`$B\` | \`$SHA\` | $WHEN |" >> "$OUT"
+            else
+              echo "| \`$B\` | HTTP $HCODE | - |" >> "$OUT"
+            fi
+          done
+          echo "" >> "$OUT"
+
+          CCODE=$(get "$ACC6_PAT" "repos/$HUB/compare/main...claude/gateway-auth-fix-nr7k0b" /tmp/cmp.json)
+          if [ "$CCODE" = "200" ]; then
+            AHEAD=$(jq -r '.ahead_by // 0' /tmp/cmp.json)
+            BEHIND=$(jq -r '.behind_by // 0' /tmp/cmp.json)
+            STATUS=$(jq -r '.status // "?"' /tmp/cmp.json)
+            echo "Comparing \`main\` to \`claude/gateway-auth-fix-nr7k0b\`: status **$STATUS**," >> "$OUT"
+            echo "the auth-fix branch is **$AHEAD commit(s) ahead** of main and $BEHIND behind." >> "$OUT"
+            echo "" >> "$OUT"
+            if [ "$AHEAD" != "0" ]; then
+              echo "> main is missing $AHEAD commit(s) that the working branch has." >> "$OUT"
+              echo "> Any account whose TBS_BRANCH is \`main\` checks out hub code without them." >> "$OUT"
+            else
+              echo "> The two are level: pointing at either checks out the same hub code today." >> "$OUT"
+            fi
+          else
+            echo "Branch comparison returned HTTP $CCODE." >> "$OUT"
+          fi
+          echo "" >> "$OUT"
+
           cat "$OUT" >> "$GITHUB_STEP_SUMMARY"
           echo "--- report ---"
           cat "$OUT"
