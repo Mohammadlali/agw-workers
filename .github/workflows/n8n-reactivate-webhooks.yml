@@ -1,0 +1,134 @@
+name: n8n -- re-register webhooks by cycling Active
+
+# Repairs n8n webhook routes after they were unregistered (GitHub deliveries
+# started 404ing) by a direct edit to n8n's PostgreSQL on 2026-09-17. n8n
+# keeps a webhook route in memory AND in its own tables; flipping `active` in
+# the database moves one without the other, and only an activation through
+# n8n's own path puts them back in step. Toggling Active in the UI does that,
+# and so does this: the REST API's deactivate/activate pair is the same code
+# path the UI button calls.
+#
+# runs-on is ubuntu-latest ON PURPOSE. Self-hosted runners depend on n8n
+# spawning them, and n8n is what this repairs -- pointing this at self-hosted
+# would be a workflow that cannot run until the thing it fixes is fixed.
+# GitHub-hosted runners were dead on this account on 2026-09-17 (jobs created,
+# zero steps, no logs, 3-6 seconds, likely an Actions spending limit). If they
+# are still dead this fails in seconds and costs nothing; if they are back,
+# this breaks the deadlock.
+#
+# Needs N8N_URL and N8N_API_KEY on the repo it runs from. It reads and writes
+# nothing else, and prints no secret.
+
+on:
+  workflow_dispatch:
+    inputs:
+      workflow_ids:
+        description: 'Space-separated n8n workflow IDs. Empty = every workflow the API reports as active.'
+        required: false
+        default: ''
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  reactivate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      N8N_URL: ${{ secrets.N8N_URL }}
+      N8N_API_KEY: ${{ secrets.N8N_API_KEY }}
+      IDS_INPUT: ${{ inputs.workflow_ids }}
+    steps:
+      - name: Guard
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ -z "${N8N_URL:-}" ]; then echo "::error::secrets.N8N_URL is not set on this repo"; exit 1; fi
+          if [ -z "${N8N_API_KEY:-}" ]; then echo "::error::secrets.N8N_API_KEY is not set on this repo"; exit 1; fi
+          echo "::add-mask::$N8N_API_KEY"
+          echo "n8n base URL is set; key is present and masked."
+
+      - name: Cycle Active on each workflow
+        shell: bash
+        run: |
+          set -uo pipefail
+          echo "::add-mask::$N8N_API_KEY"
+          BASE="${N8N_URL%/}"
+
+          # Reachability first, so an unreachable n8n reads as exactly that
+          # rather than as every workflow failing for its own reason.
+          CODE=$(curl -sS -o /tmp/list.json -w '%{http_code}' --max-time 30 \
+            -H "X-N8N-API-KEY: $N8N_API_KEY" \
+            "$BASE/api/v1/workflows?limit=250" || echo "000")
+          if [ "$CODE" != "200" ]; then
+            echo "::error::GET /api/v1/workflows returned $CODE -- n8n unreachable or the API key is rejected"
+            head -c 400 /tmp/list.json || true
+            exit 1
+          fi
+
+          IDS="${IDS_INPUT:-}"
+          if [ -z "$IDS" ]; then
+            IDS=$(jq -r '[.data[] | select(.active == true) | .id] | join(" ")' /tmp/list.json)
+          fi
+          if [ -z "$IDS" ]; then
+            echo "::warning::no active workflows reported -- nothing to cycle"
+            exit 0
+          fi
+
+          ROWS=/tmp/rows.md
+          : > "$ROWS"
+          OK=0
+          BAD=0
+
+          for ID in $IDS; do
+            NAME=$(jq -r --arg id "$ID" '.data[] | select(.id == $id) | .name // "?"' /tmp/list.json)
+            [ -z "$NAME" ] && NAME="?"
+            echo "=== $ID ($NAME) ==="
+
+            DCODE=$(curl -sS -o /tmp/d.json -w '%{http_code}' --max-time 30 -X POST \
+              -H "X-N8N-API-KEY: $N8N_API_KEY" -H "Content-Type: application/json" \
+              -d '{}' "$BASE/api/v1/workflows/$ID/deactivate" || echo "000")
+            echo "  deactivate -> $DCODE"
+
+            sleep 2
+
+            ACODE=$(curl -sS -o /tmp/a.json -w '%{http_code}' --max-time 30 -X POST \
+              -H "X-N8N-API-KEY: $N8N_API_KEY" -H "Content-Type: application/json" \
+              -d '{}' "$BASE/api/v1/workflows/$ID/activate" || echo "000")
+            echo "  activate   -> $ACODE"
+
+            # Only the activate result decides: a workflow already inactive
+            # returns non-200 on deactivate and is still fine to activate.
+            if [ "$ACODE" = "200" ]; then
+              echo "| \`$ID\` | $NAME | re-activated | deactivate $DCODE, activate $ACODE |" >> "$ROWS"
+              OK=$((OK + 1))
+            else
+              echo "::error::activate failed for $ID ($NAME): HTTP $ACODE"
+              head -c 300 /tmp/a.json || true
+              echo "| \`$ID\` | $NAME | FAILED | deactivate $DCODE, activate $ACODE |" >> "$ROWS"
+              BAD=$((BAD + 1))
+            fi
+          done
+
+          # Read the state back rather than trusting the write responses.
+          VCODE=$(curl -sS -o /tmp/verify.json -w '%{http_code}' --max-time 30 \
+            -H "X-N8N-API-KEY: $N8N_API_KEY" \
+            "$BASE/api/v1/workflows?limit=250" || echo "000")
+          ACTIVE_NOW="(verify call returned $VCODE)"
+          if [ "$VCODE" = "200" ]; then
+            ACTIVE_NOW=$(jq -r '[.data[] | select(.active == true)] | length' /tmp/verify.json)
+          fi
+
+          {
+            echo "## n8n re-activation"
+            echo ""
+            echo "| id | name | result | detail |"
+            echo "|---|---|---|---|"
+            cat "$ROWS"
+            echo ""
+            echo "re-activated: $OK &nbsp;&nbsp; failed: $BAD &nbsp;&nbsp; active now per API: $ACTIVE_NOW"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          echo "reactivated=$OK failed=$BAD active_now=$ACTIVE_NOW"
+          if [ "$BAD" -gt 0 ]; then exit 1; fi
