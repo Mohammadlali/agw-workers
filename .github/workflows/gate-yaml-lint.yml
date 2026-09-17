@@ -96,7 +96,16 @@ jobs:
                       continue
                   if "$(printf" in line and "|" in line:
                       continue
-                  sq_parts = re.findall(r"'([^']*)'", line)
+                  # Neutralise the '"'"' idiom -- the standard way to put a
+                  # literal apostrophe inside a single-quoted shell string --
+                  # before splitting on quotes. Its own quotes are structural,
+                  # not content, and the naive regex below reads them as the
+                  # end of one single-quoted run and the start of another,
+                  # then reports the double quotes it just invented. That is
+                  # what flagged agy-lead-plan.yml:200-201, whose text reads
+                  # one'"'"'s and MAP.md'"'"'s.
+                  norm = line.replace("'\"'\"'", "\x01")
+                  sq_parts = re.findall(r"'([^']*)'", norm)
                   for part in sq_parts[1:]:
                       if '"' in part:
                           errors.append((i, "[CHECK-1] double-quote in printf content string "
@@ -108,7 +117,17 @@ jobs:
               errors = []
               for i, raw_line in enumerate(lines, 1):
                   line = raw_line.rstrip()
-                  if 'python3 -c "' not in line and "python3 -c '" not in line:
+                  m = re.search(r'python3\s+-c\s+(["\'])', line)
+                  if not m:
+                      continue
+                  # A self-contained one-liner -- python3 -c "..." whose quote
+                  # also CLOSES on this line -- has no inline block to check.
+                  # Without this, the scan below never finds its terminator,
+                  # runs to end of file, and reports every following line at a
+                  # shallower indent. That is why this gate could not go green:
+                  # test-agy-chat-live.yml:165 is exactly such a one-liner, and
+                  # it was flagging lines 175-180 of the same file.
+                  if line.count(m.group(1), m.end()) > 0:
                       continue
                   py_cmd_indent = len(line) - len(line.lstrip())
                   j = i
