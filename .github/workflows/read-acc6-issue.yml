@@ -1,0 +1,152 @@
+name: Read an ACC6 issue and its comments (read-only)
+
+# Inspects one issue on mohammadlali0707-stack/agw-workers -- the repo that
+# carries agy-plan-bot and receives the issues n8n creates from Notion -- and
+# checks the exact conditions that decide whether the planning chain fires.
+#
+# Those conditions are easy to get subtly wrong and fail in silence, which is
+# how most of 2026-09-17 was spent:
+#
+#   - agy-plan-bot tests `case "$LOWER" in *"@agy-plan")` against title+body
+#     joined. The marker has to be the LAST thing in the text. A body that
+#     ends with the <!-- notion-page-id --> comment does not match, and
+#     nothing is logged when it does not.
+#   - agy-issue-bot tests the same way for "@agy". Confusing the two markers
+#     means neither path runs.
+#   - both also require author_association OWNER or COLLABORATOR, or the
+#     login Mohammadlali.
+#
+# So rather than printing the issue and leaving the reader to squint at it,
+# this reports each condition as a yes or no, and shows the last line of the
+# body, which is the part that decides.
+#
+# Read-only: GETs against the Issues API.
+
+on:
+  workflow_dispatch:
+    inputs:
+      issue:
+        description: 'Issue number on mohammadlali0707-stack/agw-workers'
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  read:
+    runs-on: self-hosted
+    timeout-minutes: 10
+    env:
+      ACC6_PAT: ${{ secrets.ACC6_PAT }}
+      SRC: mohammadlali0707-stack/agw-workers
+      NUM: ${{ inputs.issue }}
+    steps:
+      - name: Read the issue
+        shell: bash
+        run: |
+          set -uo pipefail
+          if [ -z "${ACC6_PAT:-}" ]; then echo "::error::secrets.ACC6_PAT is not set"; exit 1; fi
+          echo "::add-mask::$ACC6_PAT"
+
+          API=https://api.github.com
+          OUT=/tmp/out.md
+          : > "$OUT"
+
+          CODE=$(curl -sS -o /tmp/i.json -w '%{http_code}' --max-time 30 \
+            -H "Authorization: Bearer $ACC6_PAT" \
+            -H "Accept: application/vnd.github+json" \
+            "$API/repos/$SRC/issues/$NUM" || echo "000")
+          if [ "$CODE" != "200" ]; then
+            echo "::error::issue #$NUM returned HTTP $CODE"
+            exit 1
+          fi
+
+          TITLE=$(jq -r '.title // ""' /tmp/i.json)
+          STATE=$(jq -r '.state // "?"' /tmp/i.json)
+          AUTHOR=$(jq -r '.user.login // "?"' /tmp/i.json)
+          ASSOC=$(jq -r '.author_association // "?"' /tmp/i.json)
+          LABELS=$(jq -r '[.labels[].name] | join(", ") | if . == "" then "(none)" else . end' /tmp/i.json)
+          CREATED=$(jq -r '.created_at // "?"' /tmp/i.json)
+          jq -r '.body // ""' /tmp/i.json > /tmp/body.txt
+
+          {
+            echo "## \`$SRC\` issue #$NUM"
+            echo ""
+            echo "| field | value |"
+            echo "|---|---|"
+            echo "| title | $TITLE |"
+            echo "| state | $STATE |"
+            echo "| author | \`$AUTHOR\` |"
+            echo "| author_association | **$ASSOC** |"
+            echo "| labels | $LABELS |"
+            echo "| created | $CREATED |"
+            echo ""
+          } >> "$OUT"
+
+          # The bots join title and body with a newline, strip trailing
+          # whitespace, lowercase, then test the END of that string.
+          JOINED=$(printf '%s\n%s' "$TITLE" "$(cat /tmp/body.txt)" | sed -e 's/[[:space:]]*$//')
+          LOWER=$(printf '%s' "$JOINED" | tr '[:upper:]' '[:lower:]')
+
+          PLAN=no
+          case "$LOWER" in *"@agy-plan-approved") PLAN="no (that is the approve marker)" ;; *"@agy-plan") PLAN=YES ;; esac
+          SINGLE=no
+          case "$LOWER" in *"@agy-plan") SINGLE=no ;; *"@agy") SINGLE=YES ;; esac
+
+          # grep anchors $ per LINE, while the bots' `case` tests the whole
+          # string, so this finds a marker line wherever it sits. That is
+          # deliberate: an issue that reports a tag here but "no" above has
+          # the marker present but not LAST -- the commonest silent failure.
+          TAG=$(printf '%s' "$LOWER" | grep -oE '(ccp|cr|coffeenet|status)[[:space:]]+@agy(-plan)?$' | awk '{print $1}' || true)
+          [ -z "$TAG" ] && TAG="(none extracted)"
+
+          if grep -q 'notion-page-id' /tmp/body.txt; then MARKER=YES; else MARKER=no; fi
+
+          AUTHOK=no
+          case "$ASSOC" in OWNER|COLLABORATOR) AUTHOK=YES ;; esac
+          if [ "$AUTHOR" = "Mohammadlali" ]; then AUTHOK="YES (by login)"; fi
+
+          {
+            echo "### Conditions the bots actually test"
+            echo ""
+            echo "| condition | result |"
+            echo "|---|---|"
+            echo "| text ends with \`@agy-plan\` -> agy-plan-bot fires | **$PLAN** |"
+            echo "| text ends with \`@agy\` -> agy-issue-bot fires | **$SINGLE** |"
+            echo "| project tag extracted | \`$TAG\` |"
+            echo "| body carries a notion-page-id marker | $MARKER |"
+            echo "| author passes the OWNER/COLLABORATOR check | **$AUTHOK** |"
+            echo ""
+            echo "Last non-empty line of the body -- this is what decides:"
+            echo ""
+            echo '```'
+            grep -v '^[[:space:]]*$' /tmp/body.txt | tail -1 || echo "(body is empty)"
+            echo '```'
+            echo ""
+          } >> "$OUT"
+
+          CCODE=$(curl -sS -o /tmp/c.json -w '%{http_code}' --max-time 30 \
+            -H "Authorization: Bearer $ACC6_PAT" \
+            -H "Accept: application/vnd.github+json" \
+            "$API/repos/$SRC/issues/$NUM/comments?per_page=100" || echo "000")
+          {
+            echo "### Comments"
+            echo ""
+            if [ "$CCODE" != "200" ]; then
+              echo "Comment list returned HTTP $CCODE."
+            else
+              N=$(jq -r 'length' /tmp/c.json)
+              echo "$N comment(s)."
+              echo ""
+              if [ "$N" != "0" ]; then
+                echo '```'
+                jq -r '.[] | "[\(.created_at)] \(.user.login):\n\(.body[0:400])\n"' /tmp/c.json
+                echo '```'
+              fi
+            fi
+          } >> "$OUT"
+
+          cat "$OUT" >> "$GITHUB_STEP_SUMMARY"
+          echo "--- report ---"
+          cat "$OUT"
