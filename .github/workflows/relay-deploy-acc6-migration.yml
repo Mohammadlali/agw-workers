@@ -117,7 +117,12 @@ jobs:
             git -C "$WORK" add -A
             git -C "$WORK" config user.name "agw-relay"
             git -C "$WORK" config user.email "agw-relay@users.noreply.github.com"
-            git -C "$WORK" commit -q -F - <<'MSGEOF'
+            # Guarded because GitHub runs `shell: bash` with -e, and a plain
+            # command is not exempt from it: a commit that finds nothing staged
+            # exits non-zero and would end the whole fleet run here, inside the
+            # loop, before SKIPPED is counted and before the summary prints.
+            # Accounts after this one would silently never be visited.
+            if ! git -C "$WORK" commit -q -F - <<'MSGEOF'
           Relay: point project-repo references at ACC6
 
           Deployed from ACC0's agw-workers by relay-deploy-acc6-migration.yml.
@@ -128,6 +133,11 @@ jobs:
           Per-account agw-workers repos are unaffected, and the status Gist
           keeps ACC0_PAT because a Gist does not transfer with a repo.
           MSGEOF
+            then
+              echo "::warning::commit produced nothing for ${OWNER} -- skipping"
+              SKIPPED=$((SKIPPED + 1))
+              continue
+            fi
 
             BRANCH=$(git -C "$WORK" symbolic-ref --short HEAD)
 
