@@ -22,7 +22,13 @@ permissions:
 
 jobs:
   relay:
-    runs-on: ubuntu-latest
+    # Same reason as scan-all-accounts.yml: GitHub-hosted runners do not work
+    # on this account. Measured 2026-09-17 -- every ubuntu-latest job here is
+    # created with its label, dies in 3-6 seconds having run zero steps, and
+    # serves no logs, while self-hosted jobs succeed on the same commit. On
+    # ubuntu-latest this workflow would never reach a single account. Revert
+    # once GitHub-hosted runners work again.
+    runs-on: self-hosted
     timeout-minutes: 20
     env:
       ACC1_PAT: ${{ secrets.ACC1_PAT }}
