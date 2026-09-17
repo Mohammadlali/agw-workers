@@ -197,7 +197,7 @@ jobs:
             printf '%s\n' "You are agw-ACC${ACCOUNT}-w01, the LEAD of account ${ACCOUNT} on this fleet. This is a PLANNING request only -- do not write, edit, commit or dispatch anything yourself."
             printf '\nYOUR PACKAGE (the scope your team owns):\n%s\n' "$SAFE_GOAL"
             printf '\nDo this, in order:\n'
-            printf '%s\n' '1. Read Team/org.json in this checked-out repo. Find the 'members' entries whose 'account' is your own account number and whose 'role' is NOT 'lead' -- those are your 10 subordinates (w02..w11). Note each one'"'"'s id, title, and guild.'
+            printf '%s\n' '1. Read Team/org.json in this checked-out repo. Find the members entries whose account is your own account number and whose role is NOT lead -- those are your 10 subordinates (w02..w11). Note each one'"'"'s id, title, and guild.'
             printf '%s\n' '2. Read Team/MAP.md'"'"'s CURRENT STATE block for what is already done or in progress, so you do not propose duplicate work.'
             printf '%s\n' '3. Break YOUR PACKAGE into concrete tasks, one per subordinate whose title/guild is a real fit. You do not have to use all 10 -- skip a subordinate only if your package genuinely has no relevant work for their guild, but prefer using all 10 when the work naturally divides that way. Never invent a member_id, never assign two tasks to the same member_id.'
             printf '\n%s\n' '4. Output your ENTIRE response as exactly two parts, nothing else:'
