@@ -35,7 +35,14 @@ jobs:
     timeout-minutes: 10
     env:
       ACC0_PAT: ${{ secrets.ACC0_PAT }}
+      ACC1_PAT: ${{ secrets.ACC1_PAT }}
+      ACC2_PAT: ${{ secrets.ACC2_PAT }}
+      ACC3_PAT: ${{ secrets.ACC3_PAT }}
+      ACC4_PAT: ${{ secrets.ACC4_PAT }}
+      ACC5_PAT: ${{ secrets.ACC5_PAT }}
       ACC6_PAT: ${{ secrets.ACC6_PAT }}
+      ACC7_PAT: ${{ secrets.ACC7_PAT }}
+      ACC8_PAT: ${{ secrets.ACC8_PAT }}
       HUB: mohammadlali0707-stack/Claud-Cloud-Project
     steps:
       - name: Read the facts
@@ -85,23 +92,54 @@ jobs:
           fi
           echo "" >> "$OUT"
 
-          echo "## 2. vars.TBS_BRANCH" >> "$OUT"
+          # Every account, not just two. The first run of this workflow read
+          # ACC0 and ACC6 only and found them disagreeing -- ACC0 on main,
+          # ACC6 still on claude/gateway-auth-fix-nr7k0b -- so the value is
+          # clearly not uniform and every account has to be read to know
+          # which branch its tbs-worker.yml actually checks the hub out at.
+          echo "## 2. vars.TBS_BRANCH across all nine accounts" >> "$OUT"
           echo "" >> "$OUT"
-          echo "| repo | HTTP | value |" >> "$OUT"
-          echo "|---|---|---|" >> "$OUT"
-          read_var() {
-            VCODE=$(get "$2" "repos/$1/actions/variables/TBS_BRANCH" /tmp/var.json)
+          echo "| acc | repo | HTTP | value |" >> "$OUT"
+          echo "|---|---|---|---|" >> "$OUT"
+          MAIN_COUNT=0
+          OTHER_COUNT=0
+          for N in 0 1 2 3 4 5 6 7 8; do
+            case "$N" in
+              0) OWNER="Mohammadlali" ;;
+              1) OWNER="momonakikugava-pixel" ;;
+              2) OWNER="lali94m-max" ;;
+              3) OWNER="ngocgminh5-debug" ;;
+              4) OWNER="hmmletssee7-design" ;;
+              5) OWNER="kidding602" ;;
+              6) OWNER="mohammadlali0707-stack" ;;
+              7) OWNER="mohammad97okk" ;;
+              8) OWNER="moradzahra85-png" ;;
+            esac
+            PATVAR="ACC${N}_PAT"
+            TOKEN="${!PATVAR:-}"
+            if [ -z "$TOKEN" ]; then
+              echo "| ACC$N | \`$OWNER/agw-workers\` | - | ACC${N}_PAT not set here |" >> "$OUT"
+              continue
+            fi
+            echo "::add-mask::$TOKEN"
+            VCODE=$(get "$TOKEN" "repos/$OWNER/agw-workers/actions/variables/TBS_BRANCH" /tmp/var.json)
             if [ "$VCODE" = "200" ]; then
               VAL=$(jq -r '.value // "?"' /tmp/var.json)
-              echo "| \`$1\` | 200 | **\`$VAL\`** |" >> "$OUT"
+              if [ "$VAL" = "main" ]; then
+                MAIN_COUNT=$((MAIN_COUNT + 1))
+                echo "| ACC$N | \`$OWNER/agw-workers\` | 200 | \`$VAL\` |" >> "$OUT"
+              else
+                OTHER_COUNT=$((OTHER_COUNT + 1))
+                echo "| ACC$N | \`$OWNER/agw-workers\` | 200 | **\`$VAL\`** <- not main |" >> "$OUT"
+              fi
             elif [ "$VCODE" = "404" ]; then
-              echo "| \`$1\` | 404 | not set |" >> "$OUT"
+              echo "| ACC$N | \`$OWNER/agw-workers\` | 404 | not set (tbs-worker checks out an empty ref) |" >> "$OUT"
             else
-              echo "| \`$1\` | $VCODE | unreadable (token needs admin on that repo) |" >> "$OUT"
+              echo "| ACC$N | \`$OWNER/agw-workers\` | $VCODE | unreadable -- that PAT lacks admin |" >> "$OUT"
             fi
-          }
-          read_var "Mohammadlali/agw-workers" "$ACC0_PAT"
-          read_var "mohammadlali0707-stack/agw-workers" "$ACC6_PAT"
+          done
+          echo "" >> "$OUT"
+          echo "on \`main\`: $MAIN_COUNT &nbsp;&nbsp; on something else: $OTHER_COUNT" >> "$OUT"
           echo "" >> "$OUT"
 
           echo "## 3. The hub's own tbs-worker.yml" >> "$OUT"
