@@ -5,26 +5,39 @@ name: Verify fleet facts (read-only)
 # one owner at a time. Inside Actions the ACC*_PAT secrets exist, so the
 # answers can simply be read rather than asked for.
 #
-# Three things are open, and each has had contradictory answers:
+# It was written to settle three claims that had contradictory answers, and
+# it now serves as the standing check that they stay settled. What the first
+# runs found, on 2026-09-17:
 #
-#   1. Does mohammadlali0707-stack/Claud-Cloud-Project have a main branch,
-#      and what is its default? One report said main was created and made
-#      default; a later one said main does not exist (HTTP 422); a third said
-#      the first was right. The fleet's whole sync chain reads from whatever
-#      branch this resolves to, so a wrong answer here is load-bearing.
+#   1. The hub does have a main branch and it is the default -- so the report
+#      claiming HTTP 422 and no main was wrong. But main is not where the work
+#      is. It was cut from the working branch at 01:09 and has not moved since,
+#      while the working branch has carried on. Pointing an account at main
+#      therefore checks out hub code that is missing commits, silently.
 #
-#   2. What is vars.TBS_BRANCH actually set to, on ACC0 and on ACC6?
-#      tbs-worker.yml checks the hub out at this ref. If it still points at
-#      claude/gateway-auth-fix-nr7k0b, deleting that branch stops the fleet.
+#   2. vars.TBS_BRANCH names the branch of the HUB that tbs-worker.yml checks
+#      out -- not the branch of the agw-workers repo it is stored on. Eight
+#      accounts named the working branch; ACC0 alone had been switched to main
+#      and had been running two commits behind since 01:09. It is back in line.
 #
-#   3. Did the ACC6 fix to the hub's own tbs-worker.yml actually land, and on
-#      which branch? It was reported as done, but the line numbers quoted in
-#      that report were this repo's, not the hub's.
+#   3. The hub's own Cloud/workflows/tbs-worker.yml does carry the ACC6 owner
+#      path and the ACC6_PAT fallback, on both branches. That fix was real,
+#      even though the report announcing it quoted this repo's line numbers.
+#
+# expected_branch is an input rather than a constant so that renaming or
+# merging the hub's working branch means re-running this with a new value,
+# not editing the file and hoping someone notices.
 #
 # Read-only: every call is a GET. Nothing is created, changed or deleted.
 
 on:
   workflow_dispatch:
+    inputs:
+      expected_branch:
+        description: "The hub branch every account's TBS_BRANCH should name. Default is CCP's working branch; change it if the fleet moves, rather than editing this file."
+        required: false
+        default: 'claude/gateway-auth-fix-nr7k0b'
+        type: string
 
 permissions:
   contents: read
@@ -44,6 +57,7 @@ jobs:
       ACC7_PAT: ${{ secrets.ACC7_PAT }}
       ACC8_PAT: ${{ secrets.ACC8_PAT }}
       HUB: mohammadlali0707-stack/Claud-Cloud-Project
+      EXPECTED_BRANCH: ${{ inputs.expected_branch }}
     steps:
       - name: Read the facts
         shell: bash
@@ -92,12 +106,21 @@ jobs:
           fi
           echo "" >> "$OUT"
 
-          # Every account, not just two. The first run of this workflow read
-          # ACC0 and ACC6 only and found them disagreeing -- ACC0 on main,
-          # ACC6 still on claude/gateway-auth-fix-nr7k0b -- so the value is
-          # clearly not uniform and every account has to be read to know
-          # which branch its tbs-worker.yml actually checks the hub out at.
+          # TBS_BRANCH is not the branch of the agw-workers repo it lives on.
+          # It is the ref tbs-worker.yml checks the HUB out at:
+          #   repository: mohammadlali0707-stack/Claud-Cloud-Project
+          #   ref: ${{ vars.TBS_BRANCH }}
+          # So the right value is whatever branch CCP's real work is on, which
+          # the owner says is claude/gateway-auth-fix-nr7k0b, not main. main
+          # was created from that branch this morning and has not moved since.
+          #
+          # Reading two accounts was not enough: the first run checked ACC0 and
+          # ACC6, found them disagreeing, and the full sweep then showed ACC0
+          # was the only one out of step.
+          EXPECTED="${EXPECTED_BRANCH:-claude/gateway-auth-fix-nr7k0b}"
           echo "## 2. vars.TBS_BRANCH across all nine accounts" >> "$OUT"
+          echo "" >> "$OUT"
+          echo "Expected value: \`$EXPECTED\` (the hub branch to check out)." >> "$OUT"
           echo "" >> "$OUT"
           echo "| acc | repo | HTTP | value |" >> "$OUT"
           echo "|---|---|---|---|" >> "$OUT"
@@ -125,12 +148,12 @@ jobs:
             VCODE=$(get "$TOKEN" "repos/$OWNER/agw-workers/actions/variables/TBS_BRANCH" /tmp/var.json)
             if [ "$VCODE" = "200" ]; then
               VAL=$(jq -r '.value // "?"' /tmp/var.json)
-              if [ "$VAL" = "main" ]; then
+              if [ "$VAL" = "$EXPECTED" ]; then
                 MAIN_COUNT=$((MAIN_COUNT + 1))
                 echo "| ACC$N | \`$OWNER/agw-workers\` | 200 | \`$VAL\` |" >> "$OUT"
               else
                 OTHER_COUNT=$((OTHER_COUNT + 1))
-                echo "| ACC$N | \`$OWNER/agw-workers\` | 200 | **\`$VAL\`** <- not main |" >> "$OUT"
+                echo "| ACC$N | \`$OWNER/agw-workers\` | 200 | **\`$VAL\`** <- differs from expected |" >> "$OUT"
               fi
             elif [ "$VCODE" = "404" ]; then
               echo "| ACC$N | \`$OWNER/agw-workers\` | 404 | not set (tbs-worker checks out an empty ref) |" >> "$OUT"
@@ -139,7 +162,7 @@ jobs:
             fi
           done
           echo "" >> "$OUT"
-          echo "on \`main\`: $MAIN_COUNT &nbsp;&nbsp; on something else: $OTHER_COUNT" >> "$OUT"
+          echo "matching \`$EXPECTED\`: $MAIN_COUNT &nbsp;&nbsp; differing: $OTHER_COUNT" >> "$OUT"
           echo "" >> "$OUT"
 
           echo "## 3. The hub's own tbs-worker.yml" >> "$OUT"
