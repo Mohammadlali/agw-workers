@@ -27,6 +27,11 @@ name: Refresh Status Dashboard Data (remote, runs here instead of on status-dash
 # present here, already has the 'gist' scope) instead -- no new secret
 # needed on this repo.
 #
+# status-dashboard moved from Mohammadlali (ACC0) to
+# mohammadlali0707-stack (ACC6) on 2026-09-17. The clone below switched to
+# ACC6_PAT accordingly; the Gist PATCH did NOT, because a Gist stays with
+# the account that created it through a repo transfer.
+#
 # `schedule: cron: '*/5 * * * *'` removed 2026-09-14 at the owner's
 # explicit request: a fixed timer republished the gist every 5 minutes
 # whether or not any gate result had actually changed, which is not what
@@ -56,14 +61,21 @@ jobs:
     runs-on: self-hosted
     timeout-minutes: 5
     env:
+      # ACC0_PAT stays: collect_status_feed.py (run further down, inheriting
+      # this job env) PATCHes the status Gist with it, and a Gist does NOT
+      # move with a repo transfer -- it is still owned by Mohammadlali/ACC0.
       ACC0_PAT: ${{ secrets.ACC0_PAT }}
+      # ACC6_PAT is what reads status-dashboard itself, which DID move.
+      ACC6_PAT: ${{ secrets.ACC6_PAT }}
     steps:
       - name: Clone status-dashboard
         run: |
-          AUTH_HEADER="AUTHORIZATION: basic $(printf 'x-access-token:%s' "$ACC0_PAT" | base64 -w0)"
+          set -e
+          if [ -z "$ACC6_PAT" ]; then echo "::error::secrets.ACC6_PAT is not set -- status-dashboard now lives on mohammadlali0707-stack and ACC0_PAT can no longer read it"; exit 1; fi
+          AUTH_HEADER="AUTHORIZATION: basic $(printf 'x-access-token:%s' "$ACC6_PAT" | base64 -w0)"
           git -c http.https://github.com/.extraHeader="$AUTH_HEADER" \
             clone --branch main --single-branch --depth 1 \
-            "https://github.com/Mohammadlali/status-dashboard.git" /tmp/status-dashboard
+            "https://github.com/mohammadlali0707-stack/status-dashboard.git" /tmp/status-dashboard
 
       - name: Set up Python
         uses: actions/setup-python@v5

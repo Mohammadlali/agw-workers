@@ -15,9 +15,16 @@ name: Deploy status-dashboard code (remote, to the new Vercel project)
 # without the owner re-entering it by hand), this deploy step lives here
 # instead, same "jump server" reasoning as deploy-status-feed-remote.yml and
 # test-agy-chat-live.yml. status-dashboard's deploy-status-feed.yml
-# dispatches this workflow via the Actions API (using its own ACC0_PAT,
-# which it already has as a secret for the Gist publish) after a qualifying
-# push, passing the commit it wants deployed.
+# dispatches this workflow via the Actions API (using the PAT it already
+# has as a secret for the Gist publish) after a qualifying push, passing
+# the commit it wants deployed.
+#
+# status-dashboard moved from Mohammadlali (ACC0) to mohammadlali0707-stack
+# (ACC6) on 2026-09-17, so the clone below authenticates with ACC6_PAT, not
+# ACC0_PAT. The Gist this fleet publishes to is a separate matter: a Gist
+# does not move with a repo transfer, so anything touching it (here:
+# nothing; see deploy-status-feed-remote.yml and test-status-api-live.yml)
+# still needs ACC0_PAT.
 
 on:
   workflow_dispatch:
@@ -35,7 +42,7 @@ jobs:
     runs-on: self-hosted
     timeout-minutes: 10
     env:
-      ACC0_PAT: ${{ secrets.ACC0_PAT }}
+      ACC6_PAT: ${{ secrets.ACC6_PAT }}
       VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN_NEW }}
       VERCEL_ORG_ID: ${{ secrets.VERCEL_ORG_ID_NEW }}
       VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID_NEW }}
@@ -46,13 +53,14 @@ jobs:
           if [ -z "$VERCEL_TOKEN" ]; then echo "::error::secrets.VERCEL_TOKEN_NEW is not set"; exit 1; fi
           if [ -z "$VERCEL_ORG_ID" ]; then echo "::error::secrets.VERCEL_ORG_ID_NEW is not set"; exit 1; fi
           if [ -z "$VERCEL_PROJECT_ID" ]; then echo "::error::secrets.VERCEL_PROJECT_ID_NEW is not set"; exit 1; fi
+          if [ -z "$ACC6_PAT" ]; then echo "::error::secrets.ACC6_PAT is not set -- status-dashboard now lives on mohammadlali0707-stack and ACC0_PAT can no longer read it"; exit 1; fi
 
       - name: Clone status-dashboard at the requested commit
         run: |
           set -e
-          AUTH_HEADER="AUTHORIZATION: basic $(printf 'x-access-token:%s' "$ACC0_PAT" | base64 -w0)"
+          AUTH_HEADER="AUTHORIZATION: basic $(printf 'x-access-token:%s' "$ACC6_PAT" | base64 -w0)"
           git -c http.https://github.com/.extraHeader="$AUTH_HEADER" \
-            clone "https://github.com/Mohammadlali/status-dashboard.git" /tmp/status-dashboard-deploy
+            clone "https://github.com/mohammadlali0707-stack/status-dashboard.git" /tmp/status-dashboard-deploy
           cd /tmp/status-dashboard-deploy
           git checkout "${{ inputs.commit_sha || 'main' }}"
 

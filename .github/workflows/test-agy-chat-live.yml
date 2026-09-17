@@ -44,7 +44,9 @@ jobs:
     env:
       BYPASS: ${{ secrets.VERCEL_PROTECTION_BYPASS_NEW }}
       SITE: https://status2.airboxvip.top
-      ACC0_PAT: ${{ secrets.ACC0_PAT }}
+      # status-dashboard moved Mohammadlali (ACC0) -> mohammadlali0707-stack
+      # (ACC6) on 2026-09-17; ACC0_PAT can no longer read it.
+      ACC6_PAT: ${{ secrets.ACC6_PAT }}
       VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN_NEW }}
       VERCEL_ORG_ID: ${{ secrets.VERCEL_ORG_ID_NEW }}
       VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID_NEW }}
@@ -56,14 +58,15 @@ jobs:
           if [ -z "$VERCEL_TOKEN" ]; then echo "::error::secrets.VERCEL_TOKEN_NEW is not set"; exit 1; fi
           if [ -z "$VERCEL_ORG_ID" ]; then echo "::error::secrets.VERCEL_ORG_ID_NEW is not set"; exit 1; fi
           if [ -z "$VERCEL_PROJECT_ID" ]; then echo "::error::secrets.VERCEL_PROJECT_ID_NEW is not set"; exit 1; fi
+          if [ -z "$ACC6_PAT" ]; then echo "::error::secrets.ACC6_PAT is not set -- status-dashboard now lives on mohammadlali0707-stack"; exit 1; fi
 
       - name: Clone status-dashboard
         run: |
           set -e
-          AUTH_HEADER="AUTHORIZATION: basic $(printf 'x-access-token:%s' "$ACC0_PAT" | base64 -w0)"
+          AUTH_HEADER="AUTHORIZATION: basic $(printf 'x-access-token:%s' "$ACC6_PAT" | base64 -w0)"
           git -c http.https://github.com/.extraHeader="$AUTH_HEADER" \
             clone --branch main --single-branch --depth 1 \
-            "https://github.com/Mohammadlali/status-dashboard.git" /tmp/status-dashboard-new
+            "https://github.com/mohammadlali0707-stack/status-dashboard.git" /tmp/status-dashboard-new
 
       - name: Deploy to the new Vercel project
         id: deploy
