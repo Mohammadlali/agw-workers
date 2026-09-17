@@ -1,0 +1,136 @@
+name: Verify fleet facts (read-only)
+
+# Measures the claims this session could not check from outside Actions,
+# because the repos involved belong to other accounts and a session reaches
+# one owner at a time. Inside Actions the ACC*_PAT secrets exist, so the
+# answers can simply be read rather than asked for.
+#
+# Three things are open, and each has had contradictory answers:
+#
+#   1. Does mohammadlali0707-stack/Claud-Cloud-Project have a main branch,
+#      and what is its default? One report said main was created and made
+#      default; a later one said main does not exist (HTTP 422); a third said
+#      the first was right. The fleet's whole sync chain reads from whatever
+#      branch this resolves to, so a wrong answer here is load-bearing.
+#
+#   2. What is vars.TBS_BRANCH actually set to, on ACC0 and on ACC6?
+#      tbs-worker.yml checks the hub out at this ref. If it still points at
+#      claude/gateway-auth-fix-nr7k0b, deleting that branch stops the fleet.
+#
+#   3. Did the ACC6 fix to the hub's own tbs-worker.yml actually land, and on
+#      which branch? It was reported as done, but the line numbers quoted in
+#      that report were this repo's, not the hub's.
+#
+# Read-only: every call is a GET. Nothing is created, changed or deleted.
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: self-hosted
+    timeout-minutes: 10
+    env:
+      ACC0_PAT: ${{ secrets.ACC0_PAT }}
+      ACC6_PAT: ${{ secrets.ACC6_PAT }}
+      HUB: mohammadlali0707-stack/Claud-Cloud-Project
+    steps:
+      - name: Read the facts
+        shell: bash
+        run: |
+          set -uo pipefail
+          for t in ACC0_PAT ACC6_PAT; do
+            v="${!t:-}"
+            if [ -z "$v" ]; then echo "::error::secrets.$t is not set on this repo"; exit 1; fi
+            echo "::add-mask::$v"
+          done
+
+          API=https://api.github.com
+          OUT=/tmp/report.md
+          : > "$OUT"
+
+          # $1 token, $2 path, $3 output file -> prints HTTP code
+          get() {
+            curl -sS -o "$3" -w '%{http_code}' --max-time 30 \
+              -H "Authorization: Bearer $1" \
+              -H "Accept: application/vnd.github+json" \
+              -H "X-GitHub-Api-Version: 2022-11-28" \
+              "$API/$2" || echo "000"
+          }
+
+          echo "## 1. Hub repository: \`$HUB\`" >> "$OUT"
+          echo "" >> "$OUT"
+          CODE=$(get "$ACC6_PAT" "repos/$HUB" /tmp/hub.json)
+          if [ "$CODE" != "200" ]; then
+            echo "- repo lookup returned **HTTP $CODE** -- cannot read it with ACC6_PAT" >> "$OUT"
+            DEFAULT_BRANCH=""
+          else
+            DEFAULT_BRANCH=$(jq -r '.default_branch // "?"' /tmp/hub.json)
+            PRIV=$(jq -r 'if .private then "private" else "public" end' /tmp/hub.json)
+            echo "- default branch: **\`$DEFAULT_BRANCH\`**" >> "$OUT"
+            echo "- visibility: $PRIV" >> "$OUT"
+
+            BCODE=$(get "$ACC6_PAT" "repos/$HUB/branches?per_page=100" /tmp/branches.json)
+            if [ "$BCODE" = "200" ]; then
+              HAS_MAIN=$(jq -r '[.[].name] | index("main") | if . == null then "NO" else "YES" end' /tmp/branches.json)
+              NAMES=$(jq -r '[.[].name] | join(", ")' /tmp/branches.json)
+              echo "- a branch named \`main\` exists: **$HAS_MAIN**" >> "$OUT"
+              echo "- all branches: $NAMES" >> "$OUT"
+            else
+              echo "- branch list returned HTTP $BCODE" >> "$OUT"
+            fi
+          fi
+          echo "" >> "$OUT"
+
+          echo "## 2. vars.TBS_BRANCH" >> "$OUT"
+          echo "" >> "$OUT"
+          echo "| repo | HTTP | value |" >> "$OUT"
+          echo "|---|---|---|" >> "$OUT"
+          read_var() {
+            VCODE=$(get "$2" "repos/$1/actions/variables/TBS_BRANCH" /tmp/var.json)
+            if [ "$VCODE" = "200" ]; then
+              VAL=$(jq -r '.value // "?"' /tmp/var.json)
+              echo "| \`$1\` | 200 | **\`$VAL\`** |" >> "$OUT"
+            elif [ "$VCODE" = "404" ]; then
+              echo "| \`$1\` | 404 | not set |" >> "$OUT"
+            else
+              echo "| \`$1\` | $VCODE | unreadable (token needs admin on that repo) |" >> "$OUT"
+            fi
+          }
+          read_var "Mohammadlali/agw-workers" "$ACC0_PAT"
+          read_var "mohammadlali0707-stack/agw-workers" "$ACC6_PAT"
+          echo "" >> "$OUT"
+
+          echo "## 3. The hub's own tbs-worker.yml" >> "$OUT"
+          echo "" >> "$OUT"
+          echo "Looking for the ACC6 owner path and the ACC6_PAT token fallback." >> "$OUT"
+          echo "" >> "$OUT"
+          echo "| branch | path | HTTP | ACC6 repo path | ACC6_PAT fallback |" >> "$OUT"
+          echo "|---|---|---|---|---|" >> "$OUT"
+
+          REFS="$DEFAULT_BRANCH claude/gateway-auth-fix-nr7k0b main"
+          PATHS="Cloud/workflows/tbs-worker.yml .github/workflows/tbs-worker.yml"
+          SEEN=""
+          for REF in $REFS; do
+            if [ -z "$REF" ]; then continue; fi
+            case " $SEEN " in *" $REF "*) continue ;; esac
+            SEEN="$SEEN $REF"
+            for P in $PATHS; do
+              FCODE=$(get "$ACC6_PAT" "repos/$HUB/contents/$P?ref=$REF" /tmp/file.json)
+              if [ "$FCODE" != "200" ]; then
+                echo "| \`$REF\` | \`$P\` | $FCODE | - | - |" >> "$OUT"
+                continue
+              fi
+              jq -r '.content // ""' /tmp/file.json | tr -d '\n' | base64 -d > /tmp/file.txt 2>/dev/null || : > /tmp/file.txt
+              if grep -q "mohammadlali0707-stack/Claud-Cloud-Project" /tmp/file.txt; then OWNER_OK="YES"; else OWNER_OK="no"; fi
+              if grep -q "TBS_HUB_TOKEN || secrets.ACC6_PAT" /tmp/file.txt; then TOK_OK="YES"; else TOK_OK="no"; fi
+              echo "| \`$REF\` | \`$P\` | 200 | **$OWNER_OK** | **$TOK_OK** |" >> "$OUT"
+            done
+          done
+
+          cat "$OUT" >> "$GITHUB_STEP_SUMMARY"
+          echo "--- report ---"
+          cat "$OUT"

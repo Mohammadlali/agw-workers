@@ -70,6 +70,7 @@ jobs:
             refresh-vercel-secret.yml
             relay-deploy-acc6-migration.yml
             scan-all-accounts.yml
+            verify-fleet-facts.yml
             tbs-pubspec.yml
             tbs-worker.yml
             test-agy-chat-live.yml
