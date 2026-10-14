@@ -17,11 +17,13 @@ jobs:
     runs-on: self-hosted
     steps:
       - name: Measure the machine
+        env:
+          REPO_VISIBILITY: ${{ github.event.repository.visibility }}
         run: |
           set +e
           echo "== identity =="
           echo "repo         : $GITHUB_REPOSITORY"
-          echo "visibility   : ${{ github.event.repository.visibility }}"
+          echo "visibility   : $REPO_VISIBILITY"
           echo "runner image : $ImageOS  $ImageVersion"
           echo "arch         : $(uname -m)"
           echo ""
