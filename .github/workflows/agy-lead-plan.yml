@@ -104,7 +104,7 @@ permissions:
 jobs:
   lead:
     runs-on: ubuntu-latest  # self-hosted disabled, owner instruction 2026-09-19: runner-api.py fleet has no free capacity for this repo -- back to GitHub-hosted until further notice
-    timeout-minutes: 60
+    timeout-minutes: 75
     env:
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       CONTROL_REPO: ${{ inputs.control_repo }}
@@ -510,7 +510,7 @@ jobs:
             echo "No subordinates were dispatched -- nothing to poll for."
             exit 0
           fi
-          DEADLINE=$(( $(date +%s) + 40*60 ))
+          DEADLINE=$(( $(date +%s) + 52*60 ))  # > agw-worker.yml timeout-minutes (45) + queue/push slack; 40 was shorter than a full worker run (issue #84, ACC1 report landed at +44m)
           FOUND=0
           LAST_REPORTED=-1
           GH_HOST=$(printf '%s%s' git hub.com)
@@ -620,27 +620,6 @@ jobs:
         run: |
           gh issue comment "$ISSUE_NUMBER" --repo "$CONTROL_REPO" \
             --body "Account ${ACCOUNT} lead: ${FOUND_COUNT}/${EXPECTED_COUNT} زیردست گزارش دادند. خلاصه در \`Reports/agy/team_reports/acc${ACCOUNT}.md\` ثبت شد."
-
-      - name: Closed-Loop Lead Plan MCP Telemetry (Sprint 3)
-        if: env.ISSUE_NUMBER != ''
-        env:
-          MCP_GATEWAY_URL: 'https://n8n.airboxvip.top/webhook/mcp'
-          ISSUE_NUMBER: ${{ env.ISSUE_NUMBER }}
-          CONTROL_REPO: ${{ env.CONTROL_REPO }}
-          ACCOUNT: ${{ env.ACCOUNT }}
-          BASE_TAG: ${{ env.BASE_TAG }}
-          FOUND_COUNT: ${{ steps.poll.outputs.found }}
-          EXPECTED_COUNT: ${{ steps.dispatch.outputs.expected }}
-        run: |
-          set +e
-          python3 "${GITHUB_WORKSPACE}/Tools/mcp_reporter.py" \
-            --gateway "$MCP_GATEWAY_URL" \
-            --issue "$ISSUE_NUMBER" \
-            --account "$ACCOUNT" \
-            --tag "$BASE_TAG" \
-            --target-repo "$CONTROL_REPO" \
-            --status "completed" \
-            --message "Account ${ACCOUNT} lead finished: ${FOUND_COUNT}/${EXPECTED_COUNT} subordinates reported." || echo "::warning::MCP reporting to n8n gateway encountered an error"
 
       - name: If I am the last account to finish, trigger the final ACC6 summary (race-safe via git push)
         env:
