@@ -28,7 +28,7 @@ jobs:
     # serves no logs, while self-hosted jobs succeed on the same commit. On
     # ubuntu-latest this workflow would never reach a single account. Revert
     # once GitHub-hosted runners work again.
-    runs-on: self-hosted
+    runs-on: ubuntu-latest
     timeout-minutes: 20
     env:
       ACC1_PAT: ${{ secrets.ACC1_PAT }}
