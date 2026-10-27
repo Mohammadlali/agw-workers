@@ -28,7 +28,7 @@ jobs:
     # This repo is private, so the likeliest cause is an Actions spending
     # limit rather than anything in this file. Revert this line once
     # GitHub-hosted runners work again.
-    runs-on: self-hosted
+    runs-on: ubuntu-latest
     timeout-minutes: 20
     env:
       ACC0_PAT: ${{ secrets.ACC0_PAT }}
