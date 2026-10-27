@@ -18,7 +18,7 @@ on:
 
 jobs:
   test-status-api:
-    runs-on: self-hosted
+    runs-on: ubuntu-latest
     timeout-minutes: 3
     env:
       BYPASS: ${{ inputs.target == 'new' && secrets.VERCEL_PROTECTION_BYPASS_NEW || secrets.VERCEL_PROTECTION_BYPASS }}
